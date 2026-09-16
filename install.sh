@@ -190,15 +190,17 @@ if not os.path.exists("complex/posre.itp"):
 # --- GENERATE MDP FILES ---
 common_params = f"""
 define = -DPOSRES
-constraints = h-bonds
+constraints = all-bonds
 constraint_algorithm = lincs
-nstlist = 10
-rcoulomb = 1.0
-rvdw = 1.0
+cutoff-scheme = Verlet
+verlet-buffer-tolerance = 0.005
+nstlist = 20
+rcoulomb = 1.2
+rvdw = 1.2
 coulombtype = PME
 pbc = xyz
-dt = 0.002
-nsteps = 50000 ; 100ps
+dt = 0.001
+nsteps = 100000 ; 100ps
 tc-grps = Protein Non-Protein
 tau_t = 0.1 0.1
 ref_t = {temp} {temp}
@@ -245,7 +247,11 @@ if not os.path.exists("complex/nvt.gro"):
         "-p", "topol.top",
         "-o", "nvt.tpr"
     ], cwd="complex")
-    subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "nvt"], cwd="complex")
+    try:
+        subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "nvt"], cwd="complex")
+    except subprocess.CalledProcessError as e:
+        print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during NVT equilibration.")
+        sys.exit(1)
 else:
     print("[-] NVT already completed. Skipping to NPT...")
 
@@ -262,7 +268,11 @@ subprocess.run([
     "-maxwarn", "1" # Added safety maxwarn for minor NPT warnings
 ], cwd="complex")
 
-subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "npt"], cwd="complex")
+try:
+    subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "npt"], cwd="complex")
+except subprocess.CalledProcessError as e:
+    print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during NPT equilibration.")
+    sys.exit(1)
 log_pipeline_msg("Step 10", "OK")
 
 
@@ -1799,8 +1809,18 @@ print(f"[-] Antechamber resolved as: {' '.join(antechamber_cmd)}")
 print(f"[-] ACPYPE resolved as: {' '.join(acpype_cmd)}")
 
 # Step 1: Antechamber
+import os
+_, ext = os.path.splitext(lig_file)
+ext = ext.lower().replace(".", "")
+if ext == "sdf":
+    fi_format = "sdf"
+elif ext == "mdl":
+    fi_format = "mdl"
+else:
+    fi_format = "mol2"
+
 cmd_ac = antechamber_cmd + [
-    "-i", lig_file, "-fi", "mol2",
+    "-i", lig_file, "-fi", fi_format,
     "-o", "ligand_out.mol2", "-fo", "mol2",
     "-c", "bcc", "-s", "2", "-nc", charge, "-m", mult
 ]
@@ -2293,7 +2313,12 @@ cmd_mdrun = [
     "-v",
     "-deffnm", "em"
 ]
-subprocess.run(cmd_mdrun, cwd="complex")
+try:
+    subprocess.run(cmd_mdrun, cwd="complex")
+except subprocess.CalledProcessError as e:
+    print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during minimization.")
+    import sys
+    sys.exit(1)
 
 print("[-] Minimization complete. Output: complex/em.gro")
 log_pipeline_msg("Step 9", "OK")
@@ -2639,6 +2664,8 @@ for pyfile in "$MODULES_DIR"/*.py; do
     if ! grep -q "_safe_run" "$pyfile"; then
         sed -i '1 i\
 import subprocess\
+import os\
+os.environ["GMX_MAXBACKUP"] = "-1"\
 _orig_run = subprocess.run\
 def _safe_run(*args, **kwargs):\
     kwargs.setdefault("check", True)\
@@ -3281,6 +3308,11 @@ def interactive_config_wizard():
         if stime_input: sim_time = stime_input
         total_sim_ns = float(sim_time)
 
+    # --- 4.5 OUTPUT FRAMES ---
+    frames_input = input("\nFrames per run (Final Movie Frames) [Default: 100]: ").strip()
+    if not frames_input.isdigit():
+        frames_input = "100"
+
     # --- 5. RUNTIME & RESOURCE ESTIMATOR ---
     print("\n" + "="*50)
     print("        RESOURCE & RUNTIME ESTIMATOR          ")
@@ -3307,6 +3339,7 @@ def interactive_config_wizard():
         lines = f.readlines()
         
     has_alloc_line = False
+    has_frames_line = False
     with open("simulation_settings.txt", "w") as f:
         for line in lines:
             if line.startswith("protein_pdb =") and protein:
@@ -3333,8 +3366,16 @@ def interactive_config_wizard():
                 f.write(f"fep_lambda_windows = {fep_lambdas}\n")
             elif line.startswith("fep_window_time_ns ="):
                 f.write(f"fep_window_time_ns = {fep_time}\n")
-            elif line.startswith("simulation_time_ns =") and sim_mode == "standard":
-                f.write(f"simulation_time_ns = {sim_time}\n")
+            elif line.startswith("simulation_time_ns ="):
+                if sim_mode == "standard":
+                    f.write(f"simulation_time_ns = {sim_time}\n")
+                elif sim_mode == "ensemble":
+                    f.write(f"simulation_time_ns = {rep_time}\n")
+                elif sim_mode == "fep":
+                    f.write(f"simulation_time_ns = {fep_time}\n")
+            elif line.startswith("output_frames ="):
+                f.write(f"output_frames = {frames_input}\n")
+                has_frames_line = True
             elif line.startswith("allocated_cpu_percent ="):
                 f.write(f"allocated_cpu_percent = {alloc_percent}\n")
                 has_alloc_line = True
@@ -3342,6 +3383,8 @@ def interactive_config_wizard():
                 f.write(line)
         if not has_alloc_line:
             f.write(f"allocated_cpu_percent = {alloc_percent}\n")
+        if not has_frames_line:
+            f.write(f"output_frames = {frames_input}\n")
                 
     print("[-] Settings updated successfully!")
 
@@ -3424,6 +3467,7 @@ chmod +x "$INSTALL_DIR/autogro.py"
 
 cat << EOF_WRAPPER > "$INSTALL_DIR/autogro"
 #!/bin/bash
+export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
@@ -3432,6 +3476,7 @@ chmod +x "$INSTALL_DIR/autogro"
 mkdir -p "$BIN_DIR"
 cat << EOF_WRAPPER > "$BIN_DIR/autogro"
 #!/bin/bash
+export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
@@ -3440,6 +3485,7 @@ chmod +x "$BIN_DIR/autogro"
 mkdir -p "$HOME/bin"
 cat << EOF_WRAPPER > "$HOME/bin/autogro"
 #!/bin/bash
+export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
