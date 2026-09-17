@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.3 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.4 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -871,7 +871,20 @@ has_lig = config.get("ligand_file", "None") != "None"
 
 sys_prep_text = f"The protein structure was prepared using the {ff_name} force field. "
 if has_lig:
-    sys_prep_text += "Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with AM1-BCC partial charges. The complex was solvated "
+    charge_method_str = "AM1-BCC"
+    if os.path.exists("../ligand/charge_method.txt"):
+        with open("../ligand/charge_method.txt", "r") as cm_file:
+            if "gas" in cm_file.read().lower():
+                charge_method_str = "empirical Gasteiger"
+    elif os.path.exists("ligand/charge_method.txt"):
+        with open("ligand/charge_method.txt", "r") as cm_file:
+            if "gas" in cm_file.read().lower():
+                charge_method_str = "empirical Gasteiger"
+
+    if charge_method_str == "empirical Gasteiger":
+        sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges due to AM1-BCC convergence failure on the docked pose. The complex was solvated "
+    else:
+        sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges. The complex was solvated "
 else:
     sys_prep_text += "The system was solvated "
 sys_prep_text += f"in a dodecahedral box with a minimum distance of 1.0 nm between the solute and the box edge, using the {water_name} water model. The system was neutralized and brought to a physiological concentration of 0.15 M using Na+ and Cl- ions."
@@ -1824,11 +1837,29 @@ cmd_ac = antechamber_cmd + [
     "-o", "ligand_out.mol2", "-fo", "mol2",
     "-c", "bcc", "-s", "2", "-nc", charge, "-m", mult
 ]
-res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
-if res_ac.returncode != 0:
-    print("[!] ERROR during Antechamber execution.")
-    log_pipeline_msg("Step 4", "Antechamber execution failed.", is_error=True)
-    sys.exit(1)
+try:
+    res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+    if res_ac.returncode != 0:
+        raise subprocess.CalledProcessError(res_ac.returncode, cmd_ac)
+    with open(os.path.join(lig_dir, "charge_method.txt"), "w") as f:
+        f.write("bcc")
+except subprocess.CalledProcessError as e:
+    print("\n[!] Warning: AM1-BCC charge calculation failed (likely due to distorted docking pose).")
+    print("    -> Falling back to empirical Gasteiger charges (-c gas)...")
+    log_pipeline_msg("Step 4", "AM1-BCC failed, falling back to Gasteiger.")
+
+    cmd_ac_fallback = antechamber_cmd + [
+        "-i", lig_file, "-fi", fi_format,
+        "-o", "ligand_out.mol2", "-fo", "mol2",
+        "-c", "gas", "-s", "2", "-nc", charge, "-m", mult
+    ]
+    res_ac_fb = subprocess.run(cmd_ac_fallback, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+    if res_ac_fb.returncode != 0:
+        print("[!] ERROR during Antechamber execution (Gasteiger fallback also failed).")
+        log_pipeline_msg("Step 4", "Antechamber fallback execution failed.", is_error=True)
+        sys.exit(1)
+    with open(os.path.join(lig_dir, "charge_method.txt"), "w") as f:
+        f.write("gas")
 
 # Step 2: ACPYPE
 cmd_pype = acpype_cmd + [
@@ -2707,7 +2738,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.3            ")
+    print("           A U T O G R O  v2.4            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
