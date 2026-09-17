@@ -932,7 +932,7 @@ Production Simulation:
 {prod_text}
 
 Interaction Parameters:
-Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm. Bond lengths involving hydrogen atoms were constrained using the LINCS algorithm, allowing for an integration time step of 2 fs. Periodic boundary conditions (PBC) were applied in all three dimensions.{mmpbsa_text}
+Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm. All bond lengths were constrained using the LINCS algorithm. An integration time step of 1 fs was used for initial NVT equilibration, and 2 fs for production. Periodic boundary conditions (PBC) were applied in all three dimensions.{mmpbsa_text}
 """
 
 # --- 6. SAVE AND PRINT ---
