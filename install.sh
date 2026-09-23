@@ -2870,9 +2870,41 @@ if xvgs:
         cmd = [sys.executable, ".run_bg.py"]
 
     else: # Standard
-        cmd = ["gmx", "mdrun", "-deffnm", "md_0_1", "-nt", str(threads)]
-        if append:
-            cmd.extend(["-cpi", "md_0_1.cpt", "-append"])
+        append_flag = '["-cpi", "md_0_1.cpt", "-append"]' if append else '[]'
+        runner_code = f"""
+import subprocess
+import os
+import sys
+
+cmd = ["gmx", "mdrun", "-deffnm", "md_0_1", "-nt", "{threads}"]
+cmd.extend({append_flag})
+
+try:
+    subprocess.run(cmd, check=True)
+except subprocess.CalledProcessError as e:
+    oom_detected = False
+    if os.path.exists("mdrun_out.log"):
+        with open("mdrun_out.log", "r") as f:
+            log_content = f.read().lower()
+            if "cudaerrormemoryallocation" in log_content or "out of memory" in log_content:
+                oom_detected = True
+
+    if oom_detected:
+        print("\\n[!] CUDA Out of Memory detected. GPU cannot handle this system size/configuration.")
+        print("    -> Automatically restarting MDRun on CPU only (-nb cpu) to prevent crashing...")
+        cmd.append("-nb")
+        cmd.append("cpu")
+        try:
+            subprocess.run(cmd, check=True)
+        except Exception as retry_e:
+            print(f"[!] CPU Fallback also failed: {{retry_e}}")
+    else:
+        print("\\n[!] Simulation crashed for an unknown reason. Check mdrun_out.log.")
+        sys.exit(1)
+"""
+        with open(os.path.join(work_dir, ".run_bg.py"), "w") as f:
+            f.write(runner_code)
+        cmd = [sys.executable, ".run_bg.py"]
     
     print(f"[-] Launching background process...")
     out_file = open(os.path.join(work_dir, "mdrun_out.log"), "w")
