@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.7 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.8 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -18,9 +18,24 @@ mkdir -p "$MODULES_DIR"
 mkdir -p "$BIN_DIR"
 
 pkg_mgr=""
-if command -v micromamba &> /dev/null; then pkg_mgr="micromamba";
-elif command -v mamba &> /dev/null; then pkg_mgr="mamba";
-elif command -v conda &> /dev/null; then pkg_mgr="conda";
+if command -v micromamba &> /dev/null; then pkg_mgr="micromamba"
+elif command -v mamba &> /dev/null; then pkg_mgr="mamba"
+elif command -v conda &> /dev/null; then pkg_mgr="conda"
+else
+    # Fallback deep search for package managers if not in PATH
+    for candidate in \
+        "/data1/mgs/micromamba/bin/micromamba" \
+        "$HOME/.local/bin/micromamba" \
+        "$HOME/.micromamba/bin/micromamba" \
+        "$HOME/miniconda3/bin/conda" \
+        "$HOME/anaconda3/bin/conda" \
+        "/opt/conda/bin/conda"
+    do
+        if [ -x "$candidate" ]; then
+            pkg_mgr="$candidate"
+            break
+        fi
+    done
 fi
 
 detect_and_activate_env() {
@@ -2738,7 +2753,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.7            ")
+    print("           A U T O G R O  v2.8            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
