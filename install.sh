@@ -3166,6 +3166,54 @@ def run_pipeline(step_by_step=False):
     if not os.path.exists("simulation_settings.txt"):
         print("[!] simulation_settings.txt not found. Please setup the project first.")
         return
+
+    import shutil
+    if not shutil.which("gmx"):
+        print("\n[*] GROMACS ('gmx') not found in standard PATH. Searching system...")
+        search_dirs = [
+            "/usr/local/gromacs/bin", "/opt/gromacs/bin",
+            os.path.expanduser("~/gromacs/bin"), os.path.expanduser("~/.local/bin"),
+            "/usr/bin", "/bin"
+        ]
+
+        # Add conda environments to search
+        conda_envs_base = [os.path.expanduser("~/.conda/envs"), os.path.expanduser("~/miniconda3/envs"), os.path.expanduser("~/anaconda3/envs"), "/opt/conda/envs", "/data1/mgs/micromamba/envs"]
+        for base in conda_envs_base:
+            if os.path.isdir(base):
+                for env in os.listdir(base):
+                    search_dirs.append(os.path.join(base, env, "bin"))
+
+        found_gmx_paths = []
+        for d in search_dirs:
+            candidate = os.path.join(d, "gmx")
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                if candidate not in found_gmx_paths:
+                    found_gmx_paths.append(candidate)
+
+        if len(found_gmx_paths) == 0:
+            print("[!] Error: GROMACS ('gmx') is completely missing from this machine.")
+            print("    Please install it (e.g., 'sudo apt install gromacs') or 'module load gromacs'.")
+            return
+        elif len(found_gmx_paths) == 1:
+            chosen_gmx = found_gmx_paths[0]
+            print(f"[-] Auto-detected hidden GROMACS at: {chosen_gmx}")
+            os.environ["PATH"] = os.path.dirname(chosen_gmx) + os.pathsep + os.environ.get("PATH", "")
+        else:
+            print("\n[!] Multiple GROMACS installations found:")
+            for idx, p in enumerate(found_gmx_paths):
+                print(f"  {idx + 1}. {p}")
+            while True:
+                choice = input(f"Select which version to use [1-{len(found_gmx_paths)}]: ").strip()
+                try:
+                    c_idx = int(choice) - 1
+                    if 0 <= c_idx < len(found_gmx_paths):
+                        chosen_gmx = found_gmx_paths[c_idx]
+                        os.environ["PATH"] = os.path.dirname(chosen_gmx) + os.pathsep + os.environ.get("PATH", "")
+                        print(f"[-] Using: {chosen_gmx}")
+                        break
+                except ValueError: pass
+                print("Invalid selection.")
+
     has_ligand = False
     with open("simulation_settings.txt") as f:
         for line in f:
