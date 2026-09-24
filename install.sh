@@ -2883,11 +2883,13 @@ try:
     subprocess.run(cmd, check=True)
 except subprocess.CalledProcessError as e:
     oom_detected = False
-    if os.path.exists("mdrun_out.log"):
-        with open("mdrun_out.log", "r") as f:
-            log_content = f.read().lower()
-            if "cudaerrormemoryallocation" in log_content or "out of memory" in log_content:
-                oom_detected = True
+    for log_file in ["mdrun_out.log", "md_0_1.log", "mdrun_err.log"]:
+        if os.path.exists(log_file):
+            with open(log_file, "r") as f:
+                log_content = f.read().lower()
+                if "cudaerrormemoryallocation" in log_content or "out of memory" in log_content:
+                    oom_detected = True
+                    break
 
     if oom_detected:
         print("\\n[!] CUDA Out of Memory detected. GPU cannot handle this system size/configuration.")
@@ -3530,6 +3532,8 @@ chmod +x "$INSTALL_DIR/autogro.py"
 
 cat << EOF_WRAPPER > "$INSTALL_DIR/autogro"
 #!/bin/bash
+export PATH="$PATH"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3539,6 +3543,8 @@ chmod +x "$INSTALL_DIR/autogro"
 mkdir -p "$BIN_DIR"
 cat << EOF_WRAPPER > "$BIN_DIR/autogro"
 #!/bin/bash
+export PATH="$PATH"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3548,6 +3554,8 @@ chmod +x "$BIN_DIR/autogro"
 mkdir -p "$HOME/bin"
 cat << EOF_WRAPPER > "$HOME/bin/autogro"
 #!/bin/bash
+export PATH="$PATH"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
