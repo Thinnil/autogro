@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.6 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.7 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -2738,7 +2738,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.6            ")
+    print("           A U T O G R O  v2.7            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
@@ -3184,14 +3184,14 @@ def check_and_load_dependency(binary_name, display_name=None):
     common_envs = ["ambertools", "acpype", "autogro", "base"]
 
     for base in conda_envs_base:
+        for common in common_envs:
+            search_dirs.append(os.path.join(base, common, "bin"))
         if os.path.isdir(base):
             try:
                 for env in os.listdir(base):
                     search_dirs.append(os.path.join(base, env, "bin"))
             except OSError:
                 pass
-            for common in common_envs:
-                search_dirs.append(os.path.join(base, common, "bin"))
 
     # Fallback to active package manager env list parsing if we still need a deep search
     for conda_exe_name in ['micromamba', 'mamba', 'conda']:
@@ -3640,8 +3640,8 @@ chmod +x "$INSTALL_DIR/autogro.py"
 
 cat << EOF_WRAPPER > "$INSTALL_DIR/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3651,8 +3651,8 @@ chmod +x "$INSTALL_DIR/autogro"
 mkdir -p "$BIN_DIR"
 cat << EOF_WRAPPER > "$BIN_DIR/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3662,8 +3662,8 @@ chmod +x "$BIN_DIR/autogro"
 mkdir -p "$HOME/bin"
 cat << EOF_WRAPPER > "$HOME/bin/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
