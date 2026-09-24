@@ -3179,17 +3179,27 @@ def check_and_load_dependency(binary_name, display_name=None):
 
     # Add conda environments to search
     conda_envs_base = [os.path.expanduser("~/.conda/envs"), os.path.expanduser("~/miniconda3/envs"), os.path.expanduser("~/anaconda3/envs"), "/opt/conda/envs", "/data1/mgs/micromamba/envs"]
+    common_envs = ["ambertools", "acpype", "autogro", "base"]
+
     for base in conda_envs_base:
         if os.path.isdir(base):
-            for env in os.listdir(base):
-                search_dirs.append(os.path.join(base, env, "bin"))
+            try:
+                for env in os.listdir(base):
+                    search_dirs.append(os.path.join(base, env, "bin"))
+            except OSError:
+                pass
+            for common in common_envs:
+                search_dirs.append(os.path.join(base, common, "bin"))
 
     found_paths = []
     for d in search_dirs:
         candidate = os.path.join(d, binary_name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            if candidate not in found_paths:
-                found_paths.append(candidate)
+        try:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                if candidate not in found_paths:
+                    found_paths.append(candidate)
+        except OSError:
+            pass
 
     if len(found_paths) == 0:
         print(f"[!] Error: {display_name} ('{binary_name}') is completely missing from this machine.")
