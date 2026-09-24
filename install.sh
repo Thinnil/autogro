@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.4 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.5 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -2738,7 +2738,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.4            ")
+    print("           A U T O G R O  v2.5            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
@@ -3174,6 +3174,8 @@ def check_and_load_dependency(binary_name, display_name=None):
         f"/usr/local/{binary_name}/bin", f"/opt/{binary_name}/bin",
         os.path.expanduser(f"~/{binary_name}/bin"), os.path.expanduser("~/.local/bin"),
         "/usr/local/gromacs/bin", "/opt/gromacs/bin",
+        os.path.expanduser("~/miniconda3/bin"), os.path.expanduser("~/anaconda3/bin"),
+        os.path.expanduser("~/.micromamba/bin"), "/opt/conda/bin", "/data1/mgs/micromamba/bin",
         "/usr/bin", "/bin"
     ]
 
