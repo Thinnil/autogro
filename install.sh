@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.5 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.8 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -18,9 +18,24 @@ mkdir -p "$MODULES_DIR"
 mkdir -p "$BIN_DIR"
 
 pkg_mgr=""
-if command -v micromamba &> /dev/null; then pkg_mgr="micromamba";
-elif command -v mamba &> /dev/null; then pkg_mgr="mamba";
-elif command -v conda &> /dev/null; then pkg_mgr="conda";
+if command -v micromamba &> /dev/null; then pkg_mgr="micromamba"
+elif command -v mamba &> /dev/null; then pkg_mgr="mamba"
+elif command -v conda &> /dev/null; then pkg_mgr="conda"
+else
+    # Fallback deep search for package managers if not in PATH
+    for candidate in \
+        "/data1/mgs/micromamba/bin/micromamba" \
+        "$HOME/.local/bin/micromamba" \
+        "$HOME/.micromamba/bin/micromamba" \
+        "$HOME/miniconda3/bin/conda" \
+        "$HOME/anaconda3/bin/conda" \
+        "/opt/conda/bin/conda"
+    do
+        if [ -x "$candidate" ]; then
+            pkg_mgr="$candidate"
+            break
+        fi
+    done
 fi
 
 detect_and_activate_env() {
@@ -2738,7 +2753,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.5            ")
+    print("           A U T O G R O  v2.8            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
@@ -3184,14 +3199,44 @@ def check_and_load_dependency(binary_name, display_name=None):
     common_envs = ["ambertools", "acpype", "autogro", "base"]
 
     for base in conda_envs_base:
+        for common in common_envs:
+            search_dirs.append(os.path.join(base, common, "bin"))
         if os.path.isdir(base):
             try:
                 for env in os.listdir(base):
                     search_dirs.append(os.path.join(base, env, "bin"))
             except OSError:
                 pass
-            for common in common_envs:
-                search_dirs.append(os.path.join(base, common, "bin"))
+
+    # Fallback to active package manager env list parsing if we still need a deep search
+    for conda_exe_name in ['micromamba', 'mamba', 'conda']:
+        conda_exe = shutil.which(conda_exe_name)
+        if not conda_exe:
+            for fallback in [
+                os.path.expanduser(f"~/.local/bin/{conda_exe_name}"),
+                os.path.expanduser(f"~/miniconda3/bin/{conda_exe_name}"),
+                os.path.expanduser(f"~/anaconda3/bin/{conda_exe_name}"),
+                os.path.expanduser(f"~/.micromamba/bin/{conda_exe_name}"),
+                f"/opt/conda/bin/{conda_exe_name}",
+                f"/data1/mgs/micromamba/bin/{conda_exe_name}"
+            ]:
+                if os.path.isfile(fallback):
+                    conda_exe = fallback
+                    break
+        if conda_exe:
+            try:
+                import subprocess
+                res = subprocess.run([conda_exe, "env", "list"], capture_output=True, text=True, timeout=10)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            parts = line.split()
+                            path_part = parts[-1]
+                            if os.path.exists(path_part):
+                                search_dirs.append(os.path.join(path_part, "bin"))
+            except Exception:
+                pass
 
     found_paths = []
     for d in search_dirs:
@@ -3610,8 +3655,8 @@ chmod +x "$INSTALL_DIR/autogro.py"
 
 cat << EOF_WRAPPER > "$INSTALL_DIR/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3621,8 +3666,8 @@ chmod +x "$INSTALL_DIR/autogro"
 mkdir -p "$BIN_DIR"
 cat << EOF_WRAPPER > "$BIN_DIR/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
@@ -3632,8 +3677,8 @@ chmod +x "$BIN_DIR/autogro"
 mkdir -p "$HOME/bin"
 cat << EOF_WRAPPER > "$HOME/bin/autogro"
 #!/bin/bash
-export PATH="$PATH"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export PATH="\$PATH:$PATH"
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
 export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
