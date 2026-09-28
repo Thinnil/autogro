@@ -1,3 +1,0 @@
-#!/bin/bash
-export PYTHONPATH="/app/modules:$PYTHONPATH"
-python3 "/app/autogro.py" "$@"

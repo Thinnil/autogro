@@ -1806,13 +1806,29 @@ acpype_cmd = resolve_binary("acpype")
 print(f"[-] Antechamber resolved as: {' '.join(antechamber_cmd)}")
 print(f"[-] ACPYPE resolved as: {' '.join(acpype_cmd)}")
 
+ligand_ext = lig_file.split(".")[-1].lower()
+in_format = "mol2"
+if ligand_ext in ["sdf", "mdl"]:
+    in_format = "sdf"
+
 # Step 1: Antechamber
 cmd_ac = antechamber_cmd + [
-    "-i", lig_file, "-fi", "mol2",
+    "-i", lig_file, "-fi", in_format,
     "-o", "ligand_out.mol2", "-fo", "mol2",
     "-c", "bcc", "-s", "2", "-nc", charge, "-m", mult
 ]
 res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+
+# Fallback to gasteiger if am1-bcc fails
+if res_ac.returncode != 0:
+    print("\n[!] ACPYPE AM1-BCC charge calculation failed! The ligand geometry might be strained.")
+    print("[-] FALLBACK: Attempting to calculate empirical Gasteiger charges instead...")
+    cmd_ac = antechamber_cmd + [
+        "-i", lig_file, "-fi", in_format,
+        "-o", "ligand_out.mol2", "-fo", "mol2",
+        "-c", "gas", "-s", "2", "-nc", charge, "-m", mult
+    ]
+    res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
 if res_ac.returncode != 0:
     print("[!] ERROR during Antechamber execution.")
     log_pipeline_msg("Step 4", "Antechamber execution failed.", is_error=True)
