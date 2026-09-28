@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.8 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.9 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -18,24 +18,9 @@ mkdir -p "$MODULES_DIR"
 mkdir -p "$BIN_DIR"
 
 pkg_mgr=""
-if command -v micromamba &> /dev/null; then pkg_mgr="micromamba"
-elif command -v mamba &> /dev/null; then pkg_mgr="mamba"
-elif command -v conda &> /dev/null; then pkg_mgr="conda"
-else
-    # Fallback deep search for package managers if not in PATH
-    for candidate in \
-        "/data1/mgs/micromamba/bin/micromamba" \
-        "$HOME/.local/bin/micromamba" \
-        "$HOME/.micromamba/bin/micromamba" \
-        "$HOME/miniconda3/bin/conda" \
-        "$HOME/anaconda3/bin/conda" \
-        "/opt/conda/bin/conda"
-    do
-        if [ -x "$candidate" ]; then
-            pkg_mgr="$candidate"
-            break
-        fi
-    done
+if command -v micromamba &> /dev/null; then pkg_mgr="micromamba";
+elif command -v mamba &> /dev/null; then pkg_mgr="mamba";
+elif command -v conda &> /dev/null; then pkg_mgr="conda";
 fi
 
 detect_and_activate_env() {
@@ -147,6 +132,9 @@ check_cmd "pip" "sudo apt install python3-pip"
 if ! check_cmd "antechamber" "AmberTools"; then
     if [ -n "$pkg_mgr" ]; then
         echo "    -> Auto-creating dedicated 'ambertools' environment (Python 3.10) via $pkg_mgr..."
+        if [ "$pkg_mgr" == "micromamba" ]; then
+            export MAMBA_ROOT_PREFIX=${MAMBA_ROOT_PREFIX:-"$HOME/micromamba"}
+        fi
         "$pkg_mgr" create -y -n ambertools -c conda-forge ambertools=23.3 acpype=2023.10.27 hdf5=1.14.3 "python=3.10" || true
         detect_and_activate_env
     else
@@ -157,6 +145,9 @@ fi
 if ! check_cmd "acpype" "ACPYPE"; then
     if [ -n "$pkg_mgr" ]; then
         echo "    -> Auto-creating dedicated 'ambertools' environment (Python 3.10) via $pkg_mgr..."
+        if [ "$pkg_mgr" == "micromamba" ]; then
+            export MAMBA_ROOT_PREFIX=${MAMBA_ROOT_PREFIX:-"$HOME/micromamba"}
+        fi
         "$pkg_mgr" create -y -n ambertools -c conda-forge ambertools=23.3 acpype=2023.10.27 hdf5=1.14.3 "python=3.10" || true
         detect_and_activate_env
     else
@@ -205,17 +196,15 @@ if not os.path.exists("complex/posre.itp"):
 # --- GENERATE MDP FILES ---
 common_params = f"""
 define = -DPOSRES
-constraints = all-bonds
+constraints = h-bonds
 constraint_algorithm = lincs
-cutoff-scheme = Verlet
-verlet-buffer-tolerance = 0.005
-nstlist = 20
-rcoulomb = 1.2
-rvdw = 1.2
+nstlist = 10
+rcoulomb = 1.0
+rvdw = 1.0
 coulombtype = PME
 pbc = xyz
 dt = 0.001
-nsteps = 100000 ; 100ps
+nsteps = 50000 ; 100ps
 tc-grps = Protein Non-Protein
 tau_t = 0.1 0.1
 ref_t = {temp} {temp}
@@ -262,11 +251,7 @@ if not os.path.exists("complex/nvt.gro"):
         "-p", "topol.top",
         "-o", "nvt.tpr"
     ], cwd="complex")
-    try:
-        subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "nvt"], cwd="complex")
-    except subprocess.CalledProcessError as e:
-        print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during NVT equilibration.")
-        sys.exit(1)
+    subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "nvt"], cwd="complex")
 else:
     print("[-] NVT already completed. Skipping to NPT...")
 
@@ -283,11 +268,7 @@ subprocess.run([
     "-maxwarn", "1" # Added safety maxwarn for minor NPT warnings
 ], cwd="complex")
 
-try:
-    subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "npt"], cwd="complex")
-except subprocess.CalledProcessError as e:
-    print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during NPT equilibration.")
-    sys.exit(1)
+subprocess.run(["gmx", "mdrun", "-v", "-deffnm", "npt"], cwd="complex")
 log_pipeline_msg("Step 10", "OK")
 
 
@@ -330,7 +311,7 @@ temp    = config.get("temperature", "300")
 
 # --- 2. CALCULATE STEPS ---
 # Standard MD Step size is 0.002 ps (2 femtoseconds)
-dt = 0.002
+dt = 0.001
 total_steps = int((time_ns * 1000) / dt)
 
 # Calculate Saving Frequency (nstxout-compressed) to hit the target frame count
@@ -338,11 +319,11 @@ total_steps = int((time_ns * 1000) / dt)
 save_interval = int(total_steps / frames)
 
 # Safety: Don't save every step (files become gigabytes in seconds)
-if save_interval < 500:
+if save_interval < 1000:
     print(f"[!] Warning: Requested frames require saving every {save_interval} steps.")
     print("    -> Clamping to minimum safe interval (500 steps) to prevent disk fill.")
-    save_interval = 500
-    expected_frames = int(total_steps / 500)
+    save_interval = 1000
+    expected_frames = int(total_steps / 1000)
 else:
     expected_frames = frames
 
@@ -373,7 +354,7 @@ compressed-x-grps       = System
 ; Bond parameters
 continuation            = yes
 constraint_algorithm    = lincs
-constraints             = h-bonds
+constraints             = all-bonds
 lincs_iter              = 1
 lincs_order             = 4
 ; Neighborsearching
@@ -813,6 +794,7 @@ def log_pipeline_msg(step_name, msg, is_error=False):
         log_f.write(f"{prefix} {step_name}: {msg}\n")
 import os
 import subprocess
+os.environ["GMX_MAXBACKUP"] = "-1"
 
 # --- 1. INTERNAL DICTIONARIES (The "Brain") ---
 # Maps the GROMACS menu numbers to their official paper names
@@ -886,20 +868,7 @@ has_lig = config.get("ligand_file", "None") != "None"
 
 sys_prep_text = f"The protein structure was prepared using the {ff_name} force field. "
 if has_lig:
-    charge_method_str = "AM1-BCC"
-    if os.path.exists("../ligand/charge_method.txt"):
-        with open("../ligand/charge_method.txt", "r") as cm_file:
-            if "gas" in cm_file.read().lower():
-                charge_method_str = "empirical Gasteiger"
-    elif os.path.exists("ligand/charge_method.txt"):
-        with open("ligand/charge_method.txt", "r") as cm_file:
-            if "gas" in cm_file.read().lower():
-                charge_method_str = "empirical Gasteiger"
-
-    if charge_method_str == "empirical Gasteiger":
-        sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges due to AM1-BCC convergence failure on the docked pose. The complex was solvated "
-    else:
-        sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges. The complex was solvated "
+    sys_prep_text += "Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with AM1-BCC partial charges. The complex was solvated "
 else:
     sys_prep_text += "The system was solvated "
 sys_prep_text += f"in a dodecahedral box with a minimum distance of 1.0 nm between the solute and the box edge, using the {water_name} water model. The system was neutralized and brought to a physiological concentration of 0.15 M using Na+ and Cl- ions."
@@ -960,7 +929,7 @@ Production Simulation:
 {prod_text}
 
 Interaction Parameters:
-Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm. All bond lengths were constrained using the LINCS algorithm. An integration time step of 1 fs was used for initial NVT equilibration, and 2 fs for production. Periodic boundary conditions (PBC) were applied in all three dimensions.{mmpbsa_text}
+Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm. Bond lengths involving hydrogen atoms were constrained using the LINCS algorithm, allowing for an integration time step of 2 fs. Periodic boundary conditions (PBC) were applied in all three dimensions.{mmpbsa_text}
 """
 
 # --- 6. SAVE AND PRINT ---
@@ -1558,6 +1527,7 @@ def log_pipeline_msg(step_name, msg, is_error=False):
         log_f.write(f"{prefix} {step_name}: {msg}\n")
 import os
 import subprocess
+os.environ["GMX_MAXBACKUP"] = "-1"
 
 config = {}
 with open("simulation_settings.txt") as f:
@@ -1837,44 +1807,16 @@ print(f"[-] Antechamber resolved as: {' '.join(antechamber_cmd)}")
 print(f"[-] ACPYPE resolved as: {' '.join(acpype_cmd)}")
 
 # Step 1: Antechamber
-import os
-_, ext = os.path.splitext(lig_file)
-ext = ext.lower().replace(".", "")
-if ext == "sdf":
-    fi_format = "sdf"
-elif ext == "mdl":
-    fi_format = "mdl"
-else:
-    fi_format = "mol2"
-
 cmd_ac = antechamber_cmd + [
-    "-i", lig_file, "-fi", fi_format,
+    "-i", lig_file, "-fi", "mol2",
     "-o", "ligand_out.mol2", "-fo", "mol2",
     "-c", "bcc", "-s", "2", "-nc", charge, "-m", mult
 ]
-try:
-    res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
-    if res_ac.returncode != 0:
-        raise subprocess.CalledProcessError(res_ac.returncode, cmd_ac)
-    with open(os.path.join(lig_dir, "charge_method.txt"), "w") as f:
-        f.write("bcc")
-except subprocess.CalledProcessError as e:
-    print("\n[!] Warning: AM1-BCC charge calculation failed (likely due to distorted docking pose).")
-    print("    -> Falling back to empirical Gasteiger charges (-c gas)...")
-    log_pipeline_msg("Step 4", "AM1-BCC failed, falling back to Gasteiger.")
-
-    cmd_ac_fallback = antechamber_cmd + [
-        "-i", lig_file, "-fi", fi_format,
-        "-o", "ligand_out.mol2", "-fo", "mol2",
-        "-c", "gas", "-s", "2", "-nc", charge, "-m", mult
-    ]
-    res_ac_fb = subprocess.run(cmd_ac_fallback, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
-    if res_ac_fb.returncode != 0:
-        print("[!] ERROR during Antechamber execution (Gasteiger fallback also failed).")
-        log_pipeline_msg("Step 4", "Antechamber fallback execution failed.", is_error=True)
-        sys.exit(1)
-    with open(os.path.join(lig_dir, "charge_method.txt"), "w") as f:
-        f.write("gas")
+res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+if res_ac.returncode != 0:
+    print("[!] ERROR during Antechamber execution.")
+    log_pipeline_msg("Step 4", "Antechamber execution failed.", is_error=True)
+    sys.exit(1)
 
 # Step 2: ACPYPE
 cmd_pype = acpype_cmd + [
@@ -2032,6 +1974,7 @@ def log_pipeline_msg(step_name, msg, is_error=False):
         log_f.write(f"{prefix} {step_name}: {msg}\n")
 import os
 import subprocess
+os.environ["GMX_MAXBACKUP"] = "-1"
 
 config = {}
 with open("simulation_settings.txt") as f:
@@ -2067,6 +2010,7 @@ def log_pipeline_msg(step_name, msg, is_error=False):
         log_f.write(f"{prefix} {step_name}: {msg}\n")
 import os
 import subprocess
+os.environ["GMX_MAXBACKUP"] = "-1"
 
 config = {}
 with open("simulation_settings.txt") as f:
@@ -2321,6 +2265,7 @@ def log_pipeline_msg(step_name, msg, is_error=False):
         log_f.write(f"{prefix} {step_name}: {msg}\n")
 import os
 import subprocess
+os.environ["GMX_MAXBACKUP"] = "-1"
 
 # 1. Generate em.mdp (Energy Minimization Parameters)
 em_mdp = """
@@ -2359,12 +2304,7 @@ cmd_mdrun = [
     "-v",
     "-deffnm", "em"
 ]
-try:
-    subprocess.run(cmd_mdrun, cwd="complex")
-except subprocess.CalledProcessError as e:
-    print("\n[!] Pipeline halted: Severe steric clashes or broken topology detected during minimization.")
-    import sys
-    sys.exit(1)
+subprocess.run(cmd_mdrun, cwd="complex")
 
 print("[-] Minimization complete. Output: complex/em.gro")
 log_pipeline_msg("Step 9", "OK")
@@ -2710,8 +2650,6 @@ for pyfile in "$MODULES_DIR"/*.py; do
     if ! grep -q "_safe_run" "$pyfile"; then
         sed -i '1 i\
 import subprocess\
-import os\
-os.environ["GMX_MAXBACKUP"] = "-1"\
 _orig_run = subprocess.run\
 def _safe_run(*args, **kwargs):\
     kwargs.setdefault("check", True)\
@@ -2753,7 +2691,7 @@ def load_config(filepath="simulation_settings.txt"):
 
 def print_header():
     print("\n" + "="*42)
-    print("           A U T O G R O  v2.8            ")
+    print("           A U T O G R O  v2.9            ")
     print("="*42)
 
 def get_cpu_threads_from_user():
@@ -2801,6 +2739,30 @@ def start_mdrun(work_dir, append=False, threads=None):
                     
     sim_mode = config.get("simulation_mode", "standard").lower()
     
+
+    prep_code = ""
+    if not append:
+        root_dir = os.getcwd()
+        modules_dir = MODULES_DIR
+        prep_code = f"""
+import subprocess
+import os
+import sys
+
+def run_step(step_script):
+    print(f"[-] Running Step {{step_script}}...")
+    root_dir = {repr(root_dir)}
+    modules_dir = {repr(modules_dir)}
+    script_path = os.path.join(modules_dir, step_script)
+    if subprocess.run([sys.executable, script_path], cwd=root_dir).returncode != 0:
+        with open("ERROR_PREP.txt", "w") as f: f.write(f"Error in {{step_script}}")
+        sys.exit(1)
+
+run_step("9_minimization.py")
+run_step("10_equilibration.py")
+run_step("11_production_run.py")
+"""
+
     if sim_mode == "ensemble":
         print("\n[-] Launching Multi-Replica Ensemble MDRun in background...")
         runner_code = f"""
@@ -2809,6 +2771,8 @@ import glob
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+{prep_code}
+
 
 reps = sorted(glob.glob("replica_*.tpr"))
 num_reps = len(reps)
@@ -2853,6 +2817,7 @@ import glob
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+{prep_code}
 
 lambdas = sorted(glob.glob("fep_lambda_*.tpr"))
 num_lambdas = len(lambdas)
@@ -2885,43 +2850,9 @@ if xvgs:
         cmd = [sys.executable, ".run_bg.py"]
 
     else: # Standard
-        append_flag = '["-cpi", "md_0_1.cpt", "-append"]' if append else '[]'
-        runner_code = f"""
-import subprocess
-import os
-import sys
-
-cmd = ["gmx", "mdrun", "-deffnm", "md_0_1", "-nt", "{threads}"]
-cmd.extend({append_flag})
-
-try:
-    subprocess.run(cmd, check=True)
-except subprocess.CalledProcessError as e:
-    oom_detected = False
-    for log_file in ["mdrun_out.log", "md_0_1.log", "mdrun_err.log"]:
-        if os.path.exists(log_file):
-            with open(log_file, "r") as f:
-                log_content = f.read().lower()
-                if "cudaerrormemoryallocation" in log_content or "out of memory" in log_content:
-                    oom_detected = True
-                    break
-
-    if oom_detected:
-        print("\\n[!] CUDA Out of Memory detected. GPU cannot handle this system size/configuration.")
-        print("    -> Automatically restarting MDRun on CPU only (-nb cpu) to prevent crashing...")
-        cmd.append("-nb")
-        cmd.append("cpu")
-        try:
-            subprocess.run(cmd, check=True)
-        except Exception as retry_e:
-            print(f"[!] CPU Fallback also failed: {{retry_e}}")
-    else:
-        print("\\n[!] Simulation crashed for an unknown reason. Check mdrun_out.log.")
-        sys.exit(1)
-"""
-        with open(os.path.join(work_dir, ".run_bg.py"), "w") as f:
-            f.write(runner_code)
-        cmd = [sys.executable, ".run_bg.py"]
+        cmd = ["gmx", "mdrun", "-deffnm", "md_0_1", "-nt", str(threads)]
+        if append:
+            cmd.extend(["-cpi", "md_0_1.cpt", "-append"])
     
     print(f"[-] Launching background process...")
     out_file = open(os.path.join(work_dir, "mdrun_out.log"), "w")
@@ -3004,7 +2935,7 @@ def check_running_status(work_dir="complex", verbose=True):
         for log_file in log_files:
             if os.path.exists(log_file):
                 total_steps = 0
-                dt = 0.002
+                dt = 0.001
                 with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                     for _ in range(1000):
                         line = f.readline()
@@ -3177,110 +3108,10 @@ def run_script_by_prefix(prefix):
     result = subprocess.run([sys.executable, script_path], cwd=os.getcwd())
     return result.returncode == 0
 
-def check_and_load_dependency(binary_name, display_name=None):
-    if not display_name:
-        display_name = binary_name
-    import shutil
-    if shutil.which(binary_name):
-        return True
-
-    print(f"\\n[*] {display_name} ('{binary_name}') not found in standard PATH. Searching system...")
-    search_dirs = [
-        f"/usr/local/{binary_name}/bin", f"/opt/{binary_name}/bin",
-        os.path.expanduser(f"~/{binary_name}/bin"), os.path.expanduser("~/.local/bin"),
-        "/usr/local/gromacs/bin", "/opt/gromacs/bin",
-        os.path.expanduser("~/miniconda3/bin"), os.path.expanduser("~/anaconda3/bin"),
-        os.path.expanduser("~/.micromamba/bin"), "/opt/conda/bin", "/data1/mgs/micromamba/bin",
-        "/usr/bin", "/bin"
-    ]
-
-    # Add conda environments to search
-    conda_envs_base = [os.path.expanduser("~/.conda/envs"), os.path.expanduser("~/miniconda3/envs"), os.path.expanduser("~/anaconda3/envs"), "/opt/conda/envs", "/data1/mgs/micromamba/envs"]
-    common_envs = ["ambertools", "acpype", "autogro", "base"]
-
-    for base in conda_envs_base:
-        for common in common_envs:
-            search_dirs.append(os.path.join(base, common, "bin"))
-        if os.path.isdir(base):
-            try:
-                for env in os.listdir(base):
-                    search_dirs.append(os.path.join(base, env, "bin"))
-            except OSError:
-                pass
-
-    # Fallback to active package manager env list parsing if we still need a deep search
-    for conda_exe_name in ['micromamba', 'mamba', 'conda']:
-        conda_exe = shutil.which(conda_exe_name)
-        if not conda_exe:
-            for fallback in [
-                os.path.expanduser(f"~/.local/bin/{conda_exe_name}"),
-                os.path.expanduser(f"~/miniconda3/bin/{conda_exe_name}"),
-                os.path.expanduser(f"~/anaconda3/bin/{conda_exe_name}"),
-                os.path.expanduser(f"~/.micromamba/bin/{conda_exe_name}"),
-                f"/opt/conda/bin/{conda_exe_name}",
-                f"/data1/mgs/micromamba/bin/{conda_exe_name}"
-            ]:
-                if os.path.isfile(fallback):
-                    conda_exe = fallback
-                    break
-        if conda_exe:
-            try:
-                import subprocess
-                res = subprocess.run([conda_exe, "env", "list"], capture_output=True, text=True, timeout=10)
-                if res.returncode == 0:
-                    for line in res.stdout.splitlines():
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            parts = line.split()
-                            path_part = parts[-1]
-                            if os.path.exists(path_part):
-                                search_dirs.append(os.path.join(path_part, "bin"))
-            except Exception:
-                pass
-
-    found_paths = []
-    for d in search_dirs:
-        candidate = os.path.join(d, binary_name)
-        try:
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                if candidate not in found_paths:
-                    found_paths.append(candidate)
-        except OSError:
-            pass
-
-    if len(found_paths) == 0:
-        print(f"[!] Error: {display_name} ('{binary_name}') is completely missing from this machine.")
-        return False
-    elif len(found_paths) == 1:
-        chosen_bin = found_paths[0]
-        print(f"[-] Auto-detected hidden {display_name} at: {chosen_bin}")
-        os.environ["PATH"] = os.path.dirname(chosen_bin) + os.pathsep + os.environ.get("PATH", "")
-        return True
-    else:
-        print(f"\\n[!] Multiple {display_name} installations found:")
-        for idx, p in enumerate(found_paths):
-            print(f"  {idx + 1}. {p}")
-        while True:
-            choice = input(f"Select which version to use [1-{len(found_paths)}]: ").strip()
-            try:
-                c_idx = int(choice) - 1
-                if 0 <= c_idx < len(found_paths):
-                    chosen_bin = found_paths[c_idx]
-                    os.environ["PATH"] = os.path.dirname(chosen_bin) + os.pathsep + os.environ.get("PATH", "")
-                    print(f"[-] Using: {chosen_bin}")
-                    return True
-            except ValueError: pass
-            print("Invalid selection.")
-
 def run_pipeline(step_by_step=False):
     if not os.path.exists("simulation_settings.txt"):
         print("[!] simulation_settings.txt not found. Please setup the project first.")
         return
-
-    if not check_and_load_dependency("gmx", "GROMACS"):
-        print("    Please install it (e.g. 'sudo apt install gromacs') or run 'module load gromacs' before starting the pipeline.")
-        return
-
     has_ligand = False
     with open("simulation_settings.txt") as f:
         for line in f:
@@ -3288,17 +3119,9 @@ def run_pipeline(step_by_step=False):
                 val = line.split("=", 1)[1].strip()
                 if val and val.lower() != "none" and val != "": has_ligand = True
 
-    if has_ligand:
-        if not check_and_load_dependency("antechamber", "AmberTools (antechamber)"):
-            print("    Please install AmberTools or activate your conda environment before starting the pipeline.")
-            return
-        if not check_and_load_dependency("acpype", "ACPYPE"):
-            print("    Please install ACPYPE or activate your conda environment before starting the pipeline.")
-            return
-
     steps = [2, 3]
     if has_ligand: steps.extend([4, 5])
-    steps.extend([6, 7, 8, 9, 10, 11])
+    steps.extend([6, 7, 8])
     
     print("\n[-] Preparing for Molecular Dynamics Pipeline...")
     threads = get_cpu_threads_from_user()
@@ -3496,11 +3319,6 @@ def interactive_config_wizard():
         if stime_input: sim_time = stime_input
         total_sim_ns = float(sim_time)
 
-    # --- 4.5 OUTPUT FRAMES ---
-    frames_input = input("\nFrames per run (Final Movie Frames) [Default: 100]: ").strip()
-    if not frames_input.isdigit():
-        frames_input = "100"
-
     # --- 5. RUNTIME & RESOURCE ESTIMATOR ---
     print("\n" + "="*50)
     print("        RESOURCE & RUNTIME ESTIMATOR          ")
@@ -3527,7 +3345,6 @@ def interactive_config_wizard():
         lines = f.readlines()
         
     has_alloc_line = False
-    has_frames_line = False
     with open("simulation_settings.txt", "w") as f:
         for line in lines:
             if line.startswith("protein_pdb =") and protein:
@@ -3554,16 +3371,8 @@ def interactive_config_wizard():
                 f.write(f"fep_lambda_windows = {fep_lambdas}\n")
             elif line.startswith("fep_window_time_ns ="):
                 f.write(f"fep_window_time_ns = {fep_time}\n")
-            elif line.startswith("simulation_time_ns ="):
-                if sim_mode == "standard":
-                    f.write(f"simulation_time_ns = {sim_time}\n")
-                elif sim_mode == "ensemble":
-                    f.write(f"simulation_time_ns = {rep_time}\n")
-                elif sim_mode == "fep":
-                    f.write(f"simulation_time_ns = {fep_time}\n")
-            elif line.startswith("output_frames ="):
-                f.write(f"output_frames = {frames_input}\n")
-                has_frames_line = True
+            elif line.startswith("simulation_time_ns =") and sim_mode == "standard":
+                f.write(f"simulation_time_ns = {sim_time}\n")
             elif line.startswith("allocated_cpu_percent ="):
                 f.write(f"allocated_cpu_percent = {alloc_percent}\n")
                 has_alloc_line = True
@@ -3571,8 +3380,6 @@ def interactive_config_wizard():
                 f.write(line)
         if not has_alloc_line:
             f.write(f"allocated_cpu_percent = {alloc_percent}\n")
-        if not has_frames_line:
-            f.write(f"output_frames = {frames_input}\n")
                 
     print("[-] Settings updated successfully!")
 
@@ -3621,8 +3428,18 @@ def main_menu():
         if check_running_status("complex", verbose=False): return
     if check_pending_run("complex"): return
 
+
     while True:
         print_header()
+
+        # Check for prep errors
+        if os.path.exists(os.path.join("complex", "ERROR_PREP.txt")):
+            print("\n[!] WARNING: A background preparation step (Minimization/Equilibration) failed!")
+            print("    Check complex/ERROR_PREP.txt or the respective logs for details.")
+            with open(os.path.join("complex", "ERROR_PREP.txt"), "r") as f:
+                print("    Error Message: " + f.read().strip())
+            print("    Please resolve the issue before starting a new run.\n")
+
         print("1. Setup New Project (Create config)")
         print("2. Edit Settings (simulation_settings.txt)")
         print("3. Run Full Pipeline (Auto)")
@@ -3655,9 +3472,6 @@ chmod +x "$INSTALL_DIR/autogro.py"
 
 cat << EOF_WRAPPER > "$INSTALL_DIR/autogro"
 #!/bin/bash
-export PATH="\$PATH:$PATH"
-export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
-export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
@@ -3666,9 +3480,6 @@ chmod +x "$INSTALL_DIR/autogro"
 mkdir -p "$BIN_DIR"
 cat << EOF_WRAPPER > "$BIN_DIR/autogro"
 #!/bin/bash
-export PATH="\$PATH:$PATH"
-export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
-export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
@@ -3677,9 +3488,6 @@ chmod +x "$BIN_DIR/autogro"
 mkdir -p "$HOME/bin"
 cat << EOF_WRAPPER > "$HOME/bin/autogro"
 #!/bin/bash
-export PATH="\$PATH:$PATH"
-export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
-export GMX_MAXBACKUP=-1
 export PYTHONPATH="$INSTALL_DIR/modules:\$PYTHONPATH"
 python3 "$INSTALL_DIR/autogro.py" "\$@"
 EOF_WRAPPER
