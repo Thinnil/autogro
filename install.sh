@@ -1817,7 +1817,7 @@ cmd_ac = antechamber_cmd + [
     "-o", "ligand_out.mol2", "-fo", "mol2",
     "-c", "bcc", "-s", "2", "-nc", charge, "-m", mult
 ]
-res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd), check=False)
 
 # Fallback to gasteiger if am1-bcc fails
 if res_ac.returncode != 0:
@@ -1828,7 +1828,7 @@ if res_ac.returncode != 0:
         "-o", "ligand_out.mol2", "-fo", "mol2",
         "-c", "gas", "-s", "2", "-nc", charge, "-m", mult
     ]
-    res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd))
+    res_ac = subprocess.run(cmd_ac, cwd=lig_dir, env=_get_env_with_ld_path(antechamber_cmd), check=False)
 if res_ac.returncode != 0:
     print("[!] ERROR during Antechamber execution.")
     log_pipeline_msg("Step 4", "Antechamber execution failed.", is_error=True)
