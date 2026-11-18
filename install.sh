@@ -4,13 +4,22 @@ echo "      AutoGRO v2.9 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
-read -p "    > " user_install
+if [ -t 0 ]; then
+    read -p "    > " user_install
+else
+    if [ -t 1 ] && read -p "    > " user_install < /dev/tty 2>/dev/null; then
+        :
+    else
+        user_install="./"
+        echo "    > ./"
+    fi
+fi
 if [ -z "$user_install" ] || [[ "$user_install" == "./" || "$user_install" == "." ]]; then
     INSTALL_DIR="$(pwd)"
 else
     INSTALL_DIR="${user_install/#\~/$HOME}"
 fi
-INSTALL_DIR=$(realpath -m "$INSTALL_DIR")
+INSTALL_DIR=$(realpath -m "$INSTALL_DIR" 2>/dev/null || readlink -f "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")
 MODULES_DIR="$INSTALL_DIR/modules"
 BIN_DIR="$HOME/.local/bin"
 echo "[-] Installing to: $INSTALL_DIR"
