@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=========================================="
-echo "      AutoGRO v2.8 INSTALLER & UPDATER    "
+echo "      AutoGRO v2.9 INSTALLER & UPDATER    "
 echo "=========================================="
 echo "[*] Where would you like to install AutoGRO?"
 echo "    (Type ./ to install in your CURRENT directory)"
@@ -538,12 +538,6 @@ log_pipeline_msg("Step 12", "OK")
 
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/13_post_processing.py"
-import os
-import subprocess
-import sys
-import glob
-import re
-
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     # Writes to the current working directory, which will be the project root
@@ -768,54 +762,98 @@ for r in replicas:
         log_pipeline_msg("Step 13", f"Process failed: {e}", is_error=True)
         continue
     
-    try:
-        subprocess.run(["gmx", "trjconv", "-s", f"stripped_rep{r}.gro", "-f", out_xtc, "-dump", "9999999", "-o", out_gro], cwd=work_dir, input=f"0\n", universal_newlines=True, check=True)
-        subprocess.run(["gmx", "editconf", "-f", out_gro, "-o", out_pdb], cwd=work_dir, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR-POST-4] trjconv/editconf final structure extraction failed for replica {r}: {e}")
-        log_pipeline_msg("Step 13", f"Process failed: {e}", is_error=True)
-        continue
-
     centered_xtcs.append(out_xtc)
+    try:
+        subprocess.run(["gmx", "trjconv", "-s", f"stripped_rep{r}.gro", "-f", out_xtc, "-dump", "0", "-o", out_gro], cwd=work_dir, input="0\n", universal_newlines=True, check=True)
+        subprocess.run(["gmx", "editconf", "-f", out_gro, "-o", out_pdb], cwd=work_dir, check=True)
+    except Exception as e:
+        print(f"[!] Notice: Structure extraction for replica {r} (non-critical): {e}")
+
+# Fallback: if centered_xtcs is empty, search if replica_*_centered.xtc already exist on disk
+if not centered_xtcs:
+    for search_dir in [
+        os.path.join(work_dir, "05_Results", "Ensemble"),
+        os.path.join(work_dir, "Ensemble"),
+        os.path.join(work_dir, "05_Results"),
+        work_dir
+    ]:
+        found = glob.glob(os.path.join(search_dir, "replica_*_centered.xtc"))
+        if found:
+            found.sort(key=lambda x: int(''.join(filter(str.isdigit, os.path.basename(x))) or 0))
+            centered_xtcs = [os.path.relpath(f, work_dir).replace('\\', '/') for f in found]
+            print(f"[-] Discovered {len(centered_xtcs)} existing centered replica trajectories in {search_dir}")
+            break
 
 if centered_xtcs:
-    print("\n[-] Concatenating Replicas end-to-end into mixed_frames.xtc...")
+    print(f"\n[-] Concatenating {len(centered_xtcs)} Replicas end-to-end into mixed_frames.xtc...")
     trjcat_cmd = ["gmx", "trjcat", "-f"] + centered_xtcs + ["-o", "mixed_frames.xtc", "-cat"]
     try:
         subprocess.run(trjcat_cmd, cwd=work_dir, universal_newlines=True, check=True)
+        print("[-] Concatenation successful: mixed_frames.xtc created.")
     except subprocess.CalledProcessError as e:
         print(f"[ERROR-POST-5] trjcat failed for mixed_frames: {e}")
         log_pipeline_msg("Step 13", f"Process failed: {e}", is_error=True)
     
-    print("[-] Extracting final structure for mixed frames...")
+    print("[-] Extracting representative structure for mixed frames...")
     try:
-        ref_gro = f"stripped_rep{replicas[0]}.gro"
-        subprocess.run(["gmx", "trjconv", "-s", ref_gro, "-f", "mixed_frames.xtc", "-dump", "9999999", "-o", "mixed_frames.gro"], cwd=work_dir, input=f"0\n", universal_newlines=True, check=True)
-        subprocess.run(["gmx", "editconf", "-f", "mixed_frames.gro", "-o", "mixed_frames.pdb"], cwd=work_dir, check=True)
-    except subprocess.CalledProcessError as e:
+        ref_gro = f"stripped_rep{replicas[0]}.gro" if (replicas and os.path.exists(os.path.join(work_dir, f"stripped_rep{replicas[0]}.gro"))) else None
+        if not ref_gro:
+            cands = glob.glob(os.path.join(work_dir, "**", "replica_*_centered.pdb"), recursive=True) + glob.glob(os.path.join(work_dir, "**", "replica_*_centered.gro"), recursive=True)
+            if cands:
+                ref_gro = os.path.relpath(cands[0], work_dir)
+        
+        if ref_gro:
+            subprocess.run(["gmx", "trjconv", "-s", ref_gro, "-f", "mixed_frames.xtc", "-dump", "0", "-o", "mixed_frames.gro"], cwd=work_dir, input="0\n", universal_newlines=True, check=True)
+            subprocess.run(["gmx", "editconf", "-f", "mixed_frames.gro", "-o", "mixed_frames.pdb"], cwd=work_dir, check=True)
+    except Exception as e:
         print(f"[ERROR-POST-6] trjconv/editconf failed for mixed_frames: {e}")
         log_pipeline_msg("Step 13", f"Process failed: {e}", is_error=True)
     
     print("[-] Writing metadata CSV...")
     with open(os.path.join(work_dir, "mixed_frames_metadata.csv"), "w") as f:
         f.write("Replica,Status\n")
-        for r in replicas:
+        reps_to_log = replicas if replicas else list(range(1, len(centered_xtcs) + 1))
+        for r in reps_to_log:
             f.write(f"{r},Included in mixed_frames sequentially\n")
+
+    # Mirror mixed_frames files into 05_Results and 05_Results/Ensemble
+    import shutil
+    target_dirs = [
+        os.path.join(work_dir, "05_Results"),
+        os.path.join(work_dir, "05_Results", "Ensemble"),
+        os.path.join(work_dir, "Ensemble")
+    ]
+    for td in target_dirs:
+        if os.path.exists(td):
+            for mf in ["mixed_frames.xtc", "mixed_frames.gro", "mixed_frames.pdb", "mixed_frames_metadata.csv"]:
+                src_f = os.path.join(work_dir, mf)
+                dst_f = os.path.join(td, mf)
+                if os.path.exists(src_f) and os.path.abspath(src_f) != os.path.abspath(dst_f):
+                    try:
+                        shutil.copy2(src_f, dst_f)
+                    except Exception:
+                        pass
+
+    print("\n" + "="*60)
+    print("[-] MULTI-REPLICA VISUALIZATION INSTRUCTIONS:")
+    print("    To view the concatenated, solvent-stripped ensemble in PyMOL/VMD:")
+    print(f"      Structure:  {os.path.join(work_dir, 'mixed_frames.pdb')} (or .gro)")
+    print(f"      Trajectory: {os.path.join(work_dir, 'mixed_frames.xtc')}")
+    print("    Note: Do NOT load 'ensemble_combined.xtc' with 'mixed_frames.gro'!")
+    print("    'mixed_frames.xtc' contains stripped solute atoms (e.g. 2643),")
+    print("    whereas 'ensemble_combined.xtc' contains the full solvated box.")
+    print("="*60 + "\n")
 
 print("\n[-] SUCCESS! Multi-replica post-processing completed.")
 log_pipeline_msg("Step 13", "OK")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/14_write_methodology.py"
 def log_pipeline_msg(step_name, msg, is_error=False):
-    import os
     with open("../pipeline_report.txt" if os.path.basename(os.getcwd()) == "complex" else "pipeline_report.txt", "a") as log_f:
         prefix = "[ERROR]" if is_error else "[INFO]"
         log_f.write(f"{prefix} {step_name}: {msg}\n")
-import os
-import subprocess
 
-# --- 1. INTERNAL DICTIONARIES (The "Brain") ---
-# Maps the GROMACS menu numbers to their official paper names
+# --- 1. INTERNAL DICTIONARIES ---
 ff_map = {
     '1': 'AMBER03',
     '2': 'AMBER94',
@@ -851,50 +889,55 @@ def get_gmx_version():
         for line in result.stdout.splitlines():
             if "GROMACS version" in line:
                 return line.split()[-1]
-    except:
+    except Exception:
         return "(Version Unknown)"
     return "20XX"
 
 # --- 3. LOAD USER SETTINGS ---
 config = {}
-try:
-    with open("simulation_settings.txt") as f:
-        for line in f:
-            if "=" in line and not line.strip().startswith("#"):
-                key, val = line.strip().split("=", 1)
-                config[key.strip()] = val.strip()
-except FileNotFoundError:
+config_candidates = ["simulation_settings.txt", "../simulation_settings.txt"]
+for cp in config_candidates:
+    if os.path.exists(cp):
+        try:
+            with open(cp, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "=" in line and not line.strip().startswith("#"):
+                        key, val = line.strip().split("=", 1)
+                        config[key.strip()] = val.strip()
+            break
+        except Exception:
+            pass
+
+if not config:
     print("[!] Warning: simulation_settings.txt not found. Using defaults.")
 
 # --- 4. TRANSLATE SETTINGS TO TEXT ---
-# Get the numbers
 ff_num = config.get('forcefield_choice', '6')
 wat_num = config.get('water_choice', '1')
 
-# Convert Number -> Name (using the dictionary above)
 ff_name = ff_map.get(ff_num, f"Unknown Forcefield (Input {ff_num})")
 water_name = water_map.get(wat_num, f"Unknown Water (Input {wat_num})")
 
-# Get other vars
 temp = config.get('temperature', '300')
-time_ns = config.get('simulation_time_ns', '0.1')
+time_ns = config.get('simulation_time_ns', '100')
 frames = config.get('output_frames', '100')
 gmx_ver = get_gmx_version()
 
-# --- 5. GENERATE REPORT ---
-has_lig = config.get("ligand_file", "None") != "None"
+# --- 5. GENERATE DYNAMIC REPORT ---
+has_lig = config.get("ligand_file", "None") not in ("None", "")
 
 sys_prep_text = f"The protein structure was prepared using the {ff_name} force field. "
 if has_lig:
     charge_method_str = "AM1-BCC"
-    if os.path.exists("../ligand/charge_method.txt"):
-        with open("../ligand/charge_method.txt", "r") as cm_file:
-            if "gas" in cm_file.read().lower():
-                charge_method_str = "empirical Gasteiger"
-    elif os.path.exists("ligand/charge_method.txt"):
-        with open("ligand/charge_method.txt", "r") as cm_file:
-            if "gas" in cm_file.read().lower():
-                charge_method_str = "empirical Gasteiger"
+    for cm_path in ["ligand/charge_method.txt", "../ligand/charge_method.txt"]:
+        if os.path.exists(cm_path):
+            try:
+                with open(cm_path, "r") as cm_file:
+                    if "gas" in cm_file.read().lower():
+                        charge_method_str = "empirical Gasteiger"
+                        break
+            except Exception:
+                pass
 
     if charge_method_str == "empirical Gasteiger":
         sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges due to AM1-BCC convergence failure on the docked pose. The complex was solvated "
@@ -902,47 +945,109 @@ if has_lig:
         sys_prep_text += f"Ligand parameters were generated using ACPYPE (AnteChamber PYthon Parser interfacE), implementing the General Amber Force Field (GAFF) with {charge_method_str} partial charges. The complex was solvated "
 else:
     sys_prep_text += "The system was solvated "
-sys_prep_text += f"in a dodecahedral box with a minimum distance of 1.0 nm between the solute and the box edge, using the {water_name} water model. The system was neutralized and brought to a physiological concentration of 0.15 M using Na+ and Cl- ions."
+
+sys_prep_text += f"in a dodecahedral box with a minimum distance of 1.0 nm between the solute and the box boundaries, using the {water_name} water model. The system was neutralized and brought to a physiological concentration of 0.15 M using Na+ and Cl- ions."
 
 equil_text = "Position restraints were applied to the heavy atoms of the protein"
 if has_lig:
     equil_text += " and ligand"
 equil_text += " during both equilibration steps."
 
-methodology_text = f"""
-Title: Molecular Dynamics Simulation Methodology
-------------------------------------------------
-
-All molecular dynamics (MD) simulations were performed using the GROMACS {gmx_ver} software package.
-
-System Preparation:
-{sys_prep_text}
-
-Minimization and Equilibration:
-Energy minimization was performed using the steepest descent algorithm until the maximum force on any atom was below 1000 kJ mol^-1 nm^-1. The system was equilibrated in two phases:
-1. NVT Equilibration: A 100 ps simulation in the canonical ensemble at {temp} K using the V-rescale thermostat (tau_t = 0.1 ps) to stabilize temperature.
-2. NPT Equilibration: A 100 ps simulation in the isothermal-isobaric ensemble at 1 bar using the Berendsen barostat (tau_p = 2.0 ps) to stabilize pressure.
-{equil_text}
-"""
-
 sim_mode = config.get("simulation_mode", "standard").lower()
 if sim_mode == "ensemble":
     num_reps = config.get("ensemble_replicas", "5")
     rep_time = config.get("replica_time_ns", "5.0")
-    prod_text = f"Production MD runs were performed using a multi-replica ensemble approach to enhance conformational sampling. A total of {num_reps} independent replicas were simulated for {rep_time} ns each in the NPT ensemble, initialized with different random velocity seeds. The trajectories were concatenated to produce a final combined dataset. "
+    try:
+        total_time = float(num_reps) * float(rep_time)
+        tot_str = f"{total_time:.1f}"
+    except Exception:
+        tot_str = "N/A"
+    prod_text = (
+        f"Production MD runs were performed using a multi-replica ensemble approach to enhance conformational sampling. "
+        f"A total of {num_reps} independent replicas were simulated for {rep_time} ns each (yielding {tot_str} ns of aggregate sampling) "
+        f"in the NPT ensemble, initialized with distinct random velocity seeds. The trajectories were concatenated to produce a final combined dataset. "
+    )
 elif sim_mode == "fep":
-    prod_text = f"Alchemical Free Energy Perturbation (FEP) calculations were performed across lambda windows to decouple interactions. "
+    num_lambdas = config.get("fep_lambda_windows", "11")
+    win_time = config.get("fep_window_time_ns", "2.0")
+    prod_text = (
+        f"Alchemical Free Energy Perturbation (FEP) calculations were performed across {num_lambdas} discrete lambda windows "
+        f"({win_time} ns per window) to determine binding free energies. Coulombic and Lennard-Jones interactions were systematically decoupled. "
+        f"Intra-molecular interactions of the ligand were retained during decoupling (couple-intramol = yes) to prevent unphysical conformations. "
+        f"Soft-core potentials (sc-alpha = 0.5, sc-power = 1, sc-sigma = 0.3) were applied to prevent end-point singularities. "
+        f"Free energy differences were calculated using the Bennett Acceptance Ratio (BAR / MBAR). "
+    )
 else:
     prod_text = f"Production MD runs were performed for {time_ns} ns in the NPT ensemble. "
 
-prod_text += f"The temperature was maintained at {temp} K using the V-rescale thermostat, and pressure was maintained at 1 bar using the Parrinello-Rahman barostat (tau_p = 2.0 ps, compressibility = 4.5e-5 bar^-1). The trajectory was saved to produce a final dataset of approximately {frames} frames per run."
+prod_text += f"The temperature was maintained at {temp} K using the V-rescale thermostat (tau_t = 0.1 ps), and pressure was held at 1 bar using the Parrinello-Rahman barostat (tau_p = 2.0 ps, compressibility = 4.5e-5 bar^-1). The trajectory was saved to produce approximately {frames} frames per run."
 
+# Dynamic Action 1: Trajectory Post-Processing & Alignment (Scripts 13-16 / Option 4)
+post_proc_candidates = [
+    "complex/05_Results/md_centered.xtc", "complex/md_centered.xtc",
+    "complex/05_Results/mixed_frames.xtc", "complex/mixed_frames.xtc",
+    "05_Results/md_centered.xtc", "md_centered.xtc",
+    "05_Results/mixed_frames.xtc", "mixed_frames.xtc"
+]
+has_post_proc = any(os.path.exists(f) for f in post_proc_candidates)
+post_proc_text = ""
+if has_post_proc:
+    post_proc_text = (
+        "\n\nTrajectory Post-Processing & Alignment:\n"
+        "Raw trajectories were post-processed to restore continuous coordinates across periodic boundaries using GROMACS trjconv. "
+        "The system was clustered (-pbc cluster) and centered (-center -pbc mol) on the solute. Rotational and translational fitting "
+        "was performed on the protein backbone relative to the equilibrated reference structure. Solvent molecules and counterions were "
+        "stripped to yield clean solute trajectories (md_centered.xtc / mixed_frames.xtc) and representative coordinate frames (md_centered.pdb)."
+    )
+
+# Dynamic Action 2: Diagnostic Trajectory Repair & Optimization (analysis_trajectory.py / Option 1)
+repair_candidates = [
+    "complex/md_final.xtc", "complex/md_final.pdb", "complex/md_final.gro",
+    "md_final.xtc", "md_final.pdb", "md_final.gro"
+]
+has_repair = any(os.path.exists(f) for f in repair_candidates)
+repair_text = ""
+if has_repair:
+    repair_text = (
+        "\n\nDiagnostic Trajectory Repair & Optimization:\n"
+        "Diagnostic boundary correction and trajectory optimization were performed on the full solvated system (System group 0). "
+        "Periodic boundary clustering and solute centering were applied with complete retention of all explicit water molecules and ions. "
+        "Physical trajectory stability was validated by monitoring the Radius of Gyration (Rg) across initial frames to guarantee unexploded coordinates."
+    )
+
+# Dynamic Action 3: Volumetric Spatial Density Mapping (analysis_density.py / Option 2)
+density_files = (
+    glob.glob("complex/06_Analysis/density_*.dx") +
+    glob.glob("complex/density_*.dx") +
+    glob.glob("06_Analysis/density_*.dx") +
+    glob.glob("density_*.dx")
+)
+has_density = len(density_files) > 0
+density_text = ""
+if has_density:
+    density_text = (
+        "\n\nVolumetric Spatial Density Analysis:\n"
+        "Three-dimensional spatial occupancy grids were computed across the trajectory using MDAnalysis. "
+        "Atomic density distributions were mapped on a regular Cartesian grid (spatial resolution delta = 1.0 Å, padding = 5.0 Å) "
+        "for protein and ligand atomic species, generating OpenDX (.dx) volumetric maps for 3D isocontour visualization."
+    )
+
+# Dynamic Action 4: Binding Free Energy Calculation (MM-PBSA / Option 5)
+mmpbsa_candidates = [
+    "complex/FINAL_RESULTS_MMPBSA.dat", "complex/05_Results/FINAL_RESULTS_MMPBSA.dat",
+    "FINAL_RESULTS_MMPBSA.dat", "05_Results/FINAL_RESULTS_MMPBSA.dat"
+]
+has_mmpbsa = has_lig and any(os.path.exists(f) for f in mmpbsa_candidates)
 mmpbsa_text = ""
-if has_lig and os.path.exists("complex/FINAL_RESULTS_MMPBSA.dat"):
-    mmpbsa_text = "\n\nBinding Affinity Calculation (MM-PBSA):\nAbsolute binding free energy was estimated using the Molecular Mechanics Poisson-Boltzmann Surface Area (MM-PBSA) method implemented in gmx_MMPBSA. The polar solvation energy was calculated using the PB equation with a physiological salt concentration of 0.150 M, and the non-polar solvation energy was estimated from the solvent-accessible surface area."
+if has_mmpbsa:
+    mmpbsa_text = (
+        "\n\nBinding Free Energy Calculation (MM-PBSA):\n"
+        "End-state binding free energies were estimated using the Molecular Mechanics Poisson-Boltzmann Surface Area (MM-PBSA) "
+        "method implemented in gmx_MMPBSA. The polar solvation energy was calculated using the Poisson-Boltzmann (PB) equation "
+        "with a physiological salt concentration of 0.150 M, and the non-polar solvation energy was estimated from the solvent-accessible surface area (SASA)."
+    )
 
-methodology_text = f"""
-Title: Molecular Dynamics Simulation Methodology
+methodology_text = f"""Title: Molecular Dynamics Simulation Methodology
 ------------------------------------------------
 
 All molecular dynamics (MD) simulations were performed using the GROMACS {gmx_ver} software package.
@@ -950,39 +1055,43 @@ All molecular dynamics (MD) simulations were performed using the GROMACS {gmx_ve
 System Preparation:
 {sys_prep_text}
 
-Minimization and Equilibration:
+Energy Minimization and Equilibration:
 Energy minimization was performed using the steepest descent algorithm until the maximum force on any atom was below 1000 kJ mol^-1 nm^-1. The system was equilibrated in two phases:
-1. NVT Equilibration: A 100 ps simulation in the canonical ensemble at {temp} K using the V-rescale thermostat (tau_t = 0.1 ps) to stabilize temperature.
-2. NPT Equilibration: A 100 ps simulation in the isothermal-isobaric ensemble at 1 bar using the Berendsen barostat (tau_p = 2.0 ps) to stabilize pressure.
+1. NVT Equilibration: A 100 ps simulation in the canonical ensemble at {temp} K using the V-rescale thermostat (tau_t = 0.1 ps) and a 1 fs time step.
+2. NPT Equilibration: A 100 ps simulation in the isothermal-isobaric ensemble at 1 bar using the Berendsen barostat (tau_p = 2.0 ps, compressibility = 4.5e-5 bar^-1, refcoord_scaling = com) at {temp} K.
 {equil_text}
 
 Production Simulation:
 {prod_text}
 
-Interaction Parameters:
-Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm. All bond lengths were constrained using the LINCS algorithm. An integration time step of 1 fs was used for initial NVT equilibration, and 2 fs for production. Periodic boundary conditions (PBC) were applied in all three dimensions.{mmpbsa_text}
+Non-Bonded Interaction Parameters:
+Long-range electrostatic interactions were calculated using the Particle Mesh Ewald (PME) method with a real-space cutoff of 1.2 nm. Van der Waals interactions were treated with a cutoff of 1.2 nm using the Verlet neighbor-searching scheme (nstlist = 20, rlist = 1.2 nm). All bond lengths were constrained using the LINCS algorithm, enabling an integration time step of 2 fs for production. Periodic boundary conditions (PBC) were applied in all three spatial dimensions.{post_proc_text}{repair_text}{density_text}{mmpbsa_text}
 """
 
-# --- 6. SAVE AND PRINT ---
-output_file = "methodology_draft.txt"
-with open(output_file, "w") as f:
-    f.write(methodology_text)
+# --- 6. SAVE IN ALL RELEVANT LOCATIONS ---
+output_destinations = ["methodology_draft.txt"]
+if os.path.exists("complex"):
+    output_destinations.append("complex/methodology_draft.txt")
+if os.path.exists("complex/05_Results"):
+    output_destinations.append("complex/05_Results/methodology_draft.txt")
+if os.path.exists("05_Results"):
+    output_destinations.append("05_Results/methodology_draft.txt")
+
+for out_path in set(output_destinations):
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(methodology_text)
+    except Exception:
+        pass
 
 print("-" * 60)
-print(methodology_text)
+print(methodology_text.strip())
 print("-" * 60)
-print(f"[-] Successfully saved to '{output_file}'")
-print(f"[-] Automatically identified: Forcefield={ff_name}, Water={water_name}")
+print(f"[-] Successfully updated methodology in: {', '.join(set(output_destinations))}")
+print(f"[-] Identified: Forcefield={ff_name}, Water={water_name}, Mode={sim_mode.upper()}")
 log_pipeline_msg("Step 14", "OK")
-
-
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/15_organize_folder.py"
-import os
-import shutil
-import sys
-import glob
-
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     # Writes to the current working directory, which will be the project root
@@ -1130,12 +1239,22 @@ if os.path.exists(results_dir):
                 except Exception as e:
                     print(f"    [ERROR-ORG-1] Failed to move {safe_f}: {e}")
 
+# Mirror mixed_frames files into 05_Results/Ensemble if Ensemble exists
+ens_dir = os.path.join(work_dir, "05_Results", "Ensemble")
+if os.path.exists(ens_dir) and os.path.exists(results_dir):
+    for mf in ["mixed_frames.xtc", "mixed_frames.gro", "mixed_frames.pdb", "mixed_frames_metadata.csv"]:
+        src_mf = os.path.join(results_dir, mf)
+        dst_mf = os.path.join(ens_dir, mf)
+        if os.path.exists(src_mf) and not os.path.exists(dst_mf):
+            try:
+                shutil.copy2(src_mf, dst_mf)
+            except Exception:
+                pass
+
 print("-" * 40)
 print(f"[-] Done. {moved_count} files organized.")
 print("[-] Your 'complex' folder is now clean.")
 log_pipeline_msg("Step 15", "OK")
-
-
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/16_compressor.py"
 def log_pipeline_msg(step_name, msg, is_error=False):
@@ -1202,13 +1321,23 @@ def compress_folder():
                 orig_s = get_size_mb(rep_path)
                 
                 # Move .pdb and .xtc OUT of the replica folder so they aren't hidden in the zip!
-                os.makedirs(os.path.join(folder_path, "Ensemble"), exist_ok=True)
+                ens_dir = os.path.join(folder_path, "Ensemble")
+                os.makedirs(ens_dir, exist_ok=True)
                 for file_in_rep in os.listdir(rep_path):
                     if file_in_rep.endswith(".pdb") or file_in_rep.endswith(".xtc"):
                         os.rename(
                             os.path.join(rep_path, file_in_rep),
-                            os.path.join(folder_path, "Ensemble", file_in_rep)
+                            os.path.join(ens_dir, file_in_rep)
                         )
+                # Mirror mixed_frames files into Ensemble directory if present
+                for mf in ["mixed_frames.xtc", "mixed_frames.gro", "mixed_frames.pdb"]:
+                    src_mf = os.path.join(folder_path, mf)
+                    dst_mf = os.path.join(ens_dir, mf)
+                    if os.path.exists(src_mf) and not os.path.exists(dst_mf):
+                        try:
+                            shutil.copy2(src_mf, dst_mf)
+                        except Exception:
+                            pass
                 
                 # Now compress the heavy stuff left behind
                 print(f"    -> Compressing '{res_f}' ({orig_s:.1f} MB)...")
@@ -1264,7 +1393,6 @@ def compress_folder():
 if __name__ == "__main__":
     compress_folder()
 log_pipeline_msg("Step 16", "OK")
-
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/18_mmpbsa_analysis.py"
 def log_pipeline_msg(step_name, msg, is_error=False):
@@ -1291,16 +1419,73 @@ except FileNotFoundError:
     print("      conda activate gmxMMPBSA\n")
     sys.exit(1)
 
+candidate_trajectories = [
+    "05_Results/mixed_frames.xtc",
+    "05_Results/Ensemble/mixed_frames.xtc",
+    "05_Results/Ensemble/ensemble_combined.xtc",
+    "05_Results/md_centered.xtc",
+    "05_Results/md_0_1.xtc",
+    "md_centered.xtc",
+    "md_0_1.xtc"
+]
+
 traj = None
-if os.path.exists(os.path.join(work_dir, "05_Results", "Ensemble", "ensemble_combined.xtc")):
-    traj = "05_Results/Ensemble/ensemble_combined.xtc"
-elif os.path.exists(os.path.join(work_dir, "md_0_1.xtc")):
-    traj = "md_0_1.xtc"
-else:
+for c in candidate_trajectories:
+    if os.path.exists(os.path.join(work_dir, c)):
+        traj = c
+        break
+
+if not traj:
+    import glob
+    archives = []
+    for d in [work_dir, os.path.join(work_dir, "05_Results"), os.path.join(work_dir, "04_Production")]:
+        archives.extend(glob.glob(os.path.join(d, "*.tar.gz")))
+        archives.extend(glob.glob(os.path.join(d, "*.tar")))
+        archives.extend(glob.glob(os.path.join(d, "*.zip")))
     print("[!] Error: No suitable trajectory found for MM-PBSA analysis.")
+    if archives:
+        print(f"[*] Found compressed archives in project directories (e.g. {os.path.basename(archives[0])}).")
+        print("[*] ACTION REQUIRED: Please run Option 7 (Decompress Files) from the main menu, then retry.")
     sys.exit(1)
 
 print(f"[-] Found trajectory for MM-PBSA: {traj}")
+
+# Locate topol.top and md_0_1.tpr across work_dir and subdirectories
+search_subdirs = [work_dir, os.path.join(work_dir, "01_Setup"), os.path.join(work_dir, "04_Production"), os.path.join(work_dir, "05_Results")]
+
+topol_file = None
+for d in search_subdirs:
+    candidate = os.path.join(d, "topol.top")
+    if os.path.exists(candidate):
+        topol_file = os.path.relpath(candidate, work_dir).replace('\\', '/')
+        break
+
+tpr_file = None
+for d in search_subdirs:
+    candidate = os.path.join(d, "md_0_1.tpr")
+    if os.path.exists(candidate):
+        tpr_file = os.path.relpath(candidate, work_dir).replace('\\', '/')
+        break
+
+if not topol_file or not tpr_file:
+    import glob
+    archives = []
+    for d in [work_dir, os.path.join(work_dir, "01_Setup"), os.path.join(work_dir, "04_Production")]:
+        archives.extend(glob.glob(os.path.join(d, "*.tar.gz")))
+        archives.extend(glob.glob(os.path.join(d, "*.tar")))
+        archives.extend(glob.glob(os.path.join(d, "*.zip")))
+        
+    missing = []
+    if not topol_file: missing.append("topol.top")
+    if not tpr_file: missing.append("md_0_1.tpr")
+    
+    print(f"[!] Error: Missing required file(s) for MM-PBSA: {', '.join(missing)}")
+    if archives:
+        print(f"[*] Detected compressed archives (e.g. {os.path.basename(archives[0])}).")
+        print("[*] ACTION REQUIRED: Your files appear to be compressed. Please run Option 7 (Decompress Files) from the main menu before running MM-PBSA.")
+    else:
+        print("[*] Please ensure simulation setup (topol.top) and production run (md_0_1.tpr) have been completed.")
+    sys.exit(1)
 
 mmpbsa_in = """&general
 sys_name="Protein-Ligand Complex",
@@ -1320,7 +1505,7 @@ print("[-] Creating index.ndx for MM-PBSA...")
 group_lig = "13"
 try:
     subprocess.run(
-        ["gmx", "make_ndx", "-f", "md_0_1.tpr", "-o", "index.ndx"],
+        ["gmx", "make_ndx", "-f", tpr_file, "-o", "index.ndx"],
         input="q\n", universal_newlines=True, check=True, cwd=work_dir
     )
     with open(os.path.join(work_dir, "index.ndx")) as f:
@@ -1335,8 +1520,8 @@ except Exception as e:
 
 print("[-] Launching gmx_MMPBSA calculation...")
 cmd = [
-    "gmx_MMPBSA", "-O", "-i", "mmpbsa.in", "-cs", "md_0_1.tpr", 
-    "-ci", "index.ndx", "-cp", "topol.top", "-ct", traj, 
+    "gmx_MMPBSA", "-O", "-i", "mmpbsa.in", "-cs", tpr_file, 
+    "-ci", "index.ndx", "-cp", topol_file, "-ct", traj, 
     "-cg", "1", group_lig, "-nogui"
 ]
 try:
@@ -1345,7 +1530,6 @@ try:
 except Exception as e:
     print(f"[!] MM-PBSA Error: {e}")
 log_pipeline_msg("Step 18", "OK")
-
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/17_decompressor.py"
 def log_pipeline_msg(step_name, msg, is_error=False):
@@ -2373,6 +2557,14 @@ log_pipeline_msg("Step 9", "OK")
 
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/analysis_density.py"
+import subprocess
+import os
+os.environ["GMX_MAXBACKUP"] = "-1"
+_orig_run = subprocess.run
+def _safe_run(*args, **kwargs):
+    kwargs.setdefault("check", True)
+    return _orig_run(*args, **kwargs)
+subprocess.run = _safe_run
 import MDAnalysis as mda
 from MDAnalysis.analysis.density import DensityAnalysis
 import numpy as np
@@ -2383,34 +2575,61 @@ import warnings
 # Suppress warnings about PDB writing
 warnings.filterwarnings('ignore')
 
-# --- 1. CONFIGURATION (The part you need to change) ---
-# We point directly to your files in the 'complex' folder
-# NEW (Post-Organization)
-work_dir = "complex/05_Results"  # <--- Just point deeper
-coordinates = os.path.join(work_dir, "md_centered.pdb")
-trajectory = os.path.join(work_dir, "md_centered.xtc")
+# --- 1. CONFIGURATION ---
+candidate_pairs = [
+    ("complex/05_Results", "md_centered"),
+    ("complex/05_Results", "mixed_frames"),
+    ("complex", "md_centered"),
+    ("complex", "mixed_frames")
+]
+coordinates = None
+trajectory = None
 
-# Fallback for pre-organization
-if not os.path.exists(coordinates) or not os.path.exists(trajectory):
-    work_dir = "complex"
-    coordinates = os.path.join(work_dir, "md_centered.pdb")
-    trajectory = os.path.join(work_dir, "md_centered.xtc")
+for c_dir, prefix in candidate_pairs:
+    pdb_path = os.path.join(c_dir, f"{prefix}.pdb")
+    xtc_path = os.path.join(c_dir, f"{prefix}.xtc")
+    if os.path.exists(pdb_path) and os.path.exists(xtc_path):
+        coordinates = pdb_path
+        trajectory = xtc_path
+        break
 
-# Check if they exist
-if not os.path.exists(coordinates):
-    print(f"[!] Error: Could not find {coordinates}")
+if not coordinates or not trajectory:
+    print("[!] Error: Could not find trajectory/coordinates pair (md_centered or mixed_frames in complex/05_Results or complex).")
+    print("    Please run Option 4 (Post-Processing Pipeline) first.")
     sys.exit(1)
-if not os.path.exists(trajectory):
-    print(f"[!] Error: Could not find {trajectory}")
-    sys.exit(1)
+
+# Ensure output directory exists
+out_dir = "complex/06_Analysis"
+try:
+    os.makedirs(out_dir, exist_ok=True)
+except Exception:
+    out_dir = "complex"
+
+if not os.path.exists(out_dir):
+    out_dir = "complex"
 
 print(f"[-] Loading Universe...")
 print(f"    Structure: {coordinates}")
 print(f"    Trajectory: {trajectory}")
+print(f"    Output Directory: {out_dir}")
 
 # Load the system
 u = mda.Universe(coordinates, trajectory)
 print(f"[-] Frames loaded: {u.trajectory.n_frames}")
+
+def load_ligand_resname():
+    for sp in ["simulation_settings.txt", os.path.join("..", "simulation_settings.txt")]:
+        if os.path.exists(sp):
+            try:
+                with open(sp, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.startswith("ligand_resname =") and "=" in line:
+                            val = line.split("=", 1)[1].strip()
+                            if val and val.lower() != "none":
+                                return val
+            except Exception:
+                pass
+    return None
 
 # --- 2. HELPER FUNCTION ---
 def save_density(selection_string, filename_suffix):
@@ -2431,7 +2650,7 @@ def save_density(selection_string, filename_suffix):
         D.run()
 
         # Define output name
-        output_path = os.path.join("complex", f"density_{filename_suffix}.dx")
+        output_path = os.path.join(out_dir, f"density_{filename_suffix}.dx")
         D.density.export(output_path, type="double")
         print(f"    -> Saved: {output_path}")
         return D
@@ -2441,39 +2660,58 @@ def save_density(selection_string, filename_suffix):
 
 # --- 3. RUN ANALYSIS ---
 
-print("[-] calculating General Densities...")
-# 1. Ligand Density (Assume residue name is MOL or LIG - checking both)
-if len(u.select_atoms("resname MOL")) > 0:
-    lig_resname = "MOL"
-else:
-    lig_resname = "LIG"
+print("[-] Calculating General Densities...")
+cfg_resname = load_ligand_resname()
+lig_resname = None
 
-D_lig = save_density(f'resname {lig_resname}', 'ligand_ALL')
+if cfg_resname and len(u.select_atoms(f"resname {cfg_resname}")) > 0:
+    lig_resname = cfg_resname
+elif len(u.select_atoms("resname MOL")) > 0:
+    lig_resname = "MOL"
+elif len(u.select_atoms("resname LIG")) > 0:
+    lig_resname = "LIG"
+elif cfg_resname:
+    lig_resname = cfg_resname
+
+if lig_resname and len(u.select_atoms(f"resname {lig_resname}")) > 0:
+    D_lig = save_density(f'resname {lig_resname}', 'ligand_ALL')
+else:
+    D_lig = None
 
 # 2. Protein Density
 D_prot = save_density('protein', 'protein_ALL')
 
-print("[-] Calculating Element Densities (Ligand)...")
-# 3. Specific Elements on the Ligand
-# Carbons (Hydrophobic areas)
-save_density(f'resname {lig_resname} and name C*', 'ligand_C')
-# Hydrogens (H-bond donors)
-save_density(f'resname {lig_resname} and name H*', 'ligand_H')
-# Oxygens (H-bond acceptors)
-save_density(f'resname {lig_resname} and name O*', 'ligand_O')
-# Nitrogens (H-bond donors/acceptors)
-save_density(f'resname {lig_resname} and name N*', 'ligand_N')
+if lig_resname and len(u.select_atoms(f"resname {lig_resname}")) > 0:
+    print("[-] Calculating Element Densities (Ligand)...")
+    # 3. Specific Elements on the Ligand
+    # Carbons (Hydrophobic areas)
+    save_density(f'resname {lig_resname} and name C*', 'ligand_C')
+    # Hydrogens (H-bond donors)
+    save_density(f'resname {lig_resname} and name H*', 'ligand_H')
+    # Oxygens (H-bond acceptors)
+    save_density(f'resname {lig_resname} and name O*', 'ligand_O')
+    # Nitrogens (H-bond donors/acceptors)
+    save_density(f'resname {lig_resname} and name N*', 'ligand_N')
 
-# Check for others (Sulfur, Phosphorus, Fluorine, Chlorine)
-save_density(f'resname {lig_resname} and name S*', 'ligand_S')
-save_density(f'resname {lig_resname} and name P*', 'ligand_P')
-save_density(f'resname {lig_resname} and name F*', 'ligand_F')
-save_density(f'resname {lig_resname} and name Cl*', 'ligand_Cl')
+    # Check for others (Sulfur, Phosphorus, Fluorine, Chlorine)
+    save_density(f'resname {lig_resname} and name S*', 'ligand_S')
+    save_density(f'resname {lig_resname} and name P*', 'ligand_P')
+    save_density(f'resname {lig_resname} and name F*', 'ligand_F')
+    save_density(f'resname {lig_resname} and name Cl*', 'ligand_Cl')
+else:
+    print(f"[*] No ligand atoms detected (searched: {cfg_resname or 'MOL/LIG'}). Skipping ligand element densities.")
 
-print("\n[-] DONE. You can load the .dx files in VMD or PyMOL.")
-
+print(f"\n[-] DONE. You can load the .dx files from {out_dir} in VMD or PyMOL.")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/analysis_trajectory.py"
+import subprocess
+import os
+os.environ["GMX_MAXBACKUP"] = "-1"
+_orig_run = subprocess.run
+def _safe_run(*args, **kwargs):
+    kwargs.setdefault("check", True)
+    return _orig_run(*args, **kwargs)
+subprocess.run = _safe_run
 import subprocess
 import os
 import sys
@@ -2563,6 +2801,7 @@ def locate_trajectory_files():
         archives = []
         for d in search_dirs:
             archives.extend(glob.glob(os.path.join(d, "*.tar.gz")))
+            archives.extend(glob.glob(os.path.join(d, "*.tar")))
             archives.extend(glob.glob(os.path.join(d, "*.zip")))
             
         print(f"[-] Error: Could not locate required files: {', '.join(missing_files)}")
@@ -2578,6 +2817,23 @@ def locate_trajectory_files():
     return required_files[INPUT_XTC], required_files[INPUT_STR]
 
 INPUT_XTC, INPUT_STR = locate_trajectory_files()
+
+def extract_reference_structures():
+    final_xtc = os.path.join(WORK_DIR, OUTPUT_FINAL)
+    if not os.path.exists(final_xtc):
+        return
+    print("\n[-] Extracting frame 0 reference structure (md_final.pdb and md_final.gro)...")
+    ref_s = tpr if (tpr and os.path.exists(os.path.join(WORK_DIR, tpr))) else INPUT_STR
+    cmd_gro = ["gmx", "trjconv", "-s", ref_s, "-f", OUTPUT_FINAL, "-o", "md_final.gro", "-dump", "0"]
+    run_cmd(cmd_gro, inputs="0\n")
+    if os.path.exists(os.path.join(WORK_DIR, "md_final.gro")):
+        cmd_pdb = ["gmx", "editconf", "-f", "md_final.gro", "-o", "md_final.pdb"]
+        run_cmd(cmd_pdb)
+    else:
+        cmd_pdb = ["gmx", "trjconv", "-s", ref_s, "-f", OUTPUT_FINAL, "-o", "md_final.pdb", "-dump", "0"]
+        run_cmd(cmd_pdb, inputs="0\n")
+    if os.path.exists(os.path.join(WORK_DIR, "md_final.pdb")) and os.path.exists(os.path.join(WORK_DIR, "md_final.gro")):
+        print("[+] Created reference structures md_final.pdb and md_final.gro for PyMOL/VMD visualization.")
 
 # Generate TPR if possible
 tpr = TPR_FILE
@@ -2623,6 +2879,7 @@ if tpr:
         for f in ["temp_cluster.xtc", "temp_centered.xtc", "dummy.mdp", "gyrate_check.xvg"]:
             f_path = os.path.join(WORK_DIR, f)
             if os.path.exists(f_path): os.remove(f_path)
+        extract_reference_structures()
         sys.exit(0)
     else:
         print("\n[!] FAILURE: Strategy 1 produced an exploded protein.")
@@ -2654,6 +2911,7 @@ run_cmd([
 if os.path.exists(os.path.join(WORK_DIR, "temp_final_2.xtc")):
     print("\n[+] SUCCESS: Strategy 2 completed.")
     os.rename(os.path.join(WORK_DIR, "temp_final_2.xtc"), os.path.join(WORK_DIR, OUTPUT_FINAL))
+    extract_reference_structures()
 else:
     print("[!] Error: Strategy 2 failed to produce output.")
 
@@ -2663,7 +2921,6 @@ for f in ["temp_res.xtc", "temp_centered.xtc", "dummy.mdp"]:
     if os.path.exists(f_path): os.remove(f_path)
 
 print(f"[-] Done. Final trajectory: {OUTPUT_FINAL}")
-
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/density_map.pml"
 # 1. Load the files (Adjust filenames if needed)
@@ -2833,12 +3090,16 @@ def run_rep(r):
 with ThreadPoolExecutor(max_workers=concurrent_jobs) as executor:
     list(executor.map(run_rep, reps))
 
-xtcs = sorted(glob.glob(os.path.join("replica_*", "replica_*.xtc")))
+xtcs = sorted(glob.glob(os.path.join("replica_*", "replica_*.xtc")), key=lambda x: int(''.join(filter(str.isdigit, os.path.basename(x))) or 0))
 if xtcs:
     os.makedirs("05_Results/Ensemble", exist_ok=True)
     out_xtc = "05_Results/Ensemble/ensemble_combined.xtc"
-    cmd_cat = ["gmx", "trjcat", "-f"] + xtcs + ["-o", out_xtc]
-    subprocess.run(cmd_cat, input="0\\n", universal_newlines=True)
+    cmd_cat = ["gmx", "trjcat", "-f"] + xtcs + ["-o", out_xtc, "-cat"]
+    subprocess.run(cmd_cat, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    first_gro = os.path.join("replica_1", "replica_1.gro")
+    if os.path.exists(first_gro):
+        subprocess.run(["gmx", "editconf", "-f", first_gro, "-o", "05_Results/Ensemble/ensemble_combined.pdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["gmx", "editconf", "-f", first_gro, "-o", "05_Results/Ensemble/ensemble_combined.gro"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     print("[-] Multi-Replica Ensemble Trajectory merged into 05_Results/Ensemble/ensemble_combined.xtc")
 """
         with open(os.path.join(work_dir, ".run_bg.py"), "w") as f:
@@ -3330,49 +3591,103 @@ def run_pipeline(step_by_step=False):
     print("[-] Return to the main menu later to check status or analyze results.")
 
 def analyze_results():
-    has_ligand = False
-    if os.path.exists("simulation_settings.txt"):
-        with open("simulation_settings.txt") as f:
-            for line in f:
-                if line.startswith("ligand_file ="):
-                    val = line.split("=", 1)[1].strip()
-                    if val.lower() != "none": has_ligand = True
-                    
-    print("\n" + "="*42)
-    print("               ANALYSIS MENU              ")
-    print("="*42)
-    print("1. Optimize Best Configuration (Centering + Rot/Trans fixing)")
-    print("2. Run Density Analysis (Calculates .dx files)")
-    print("3. Show Density Map Instructions (For PyMOL)")
-    print("4. Run Post-Processing & Cleanup (Scripts 13-16)")
-    if has_ligand:
-        print("5. Run MM-PBSA Binding Affinity Calculation (Script 18)")
-        print("6. Return to Main Menu")
-    else:
-        print("5. Return to Main Menu")
-    
-    choice = input("\nSelect option: ").strip()
-    if choice == '1':
-        script = os.path.join(MODULES_DIR, "analysis_trajectory.py")
-        if os.path.exists(script): subprocess.run([sys.executable, script], cwd=os.getcwd())
-    elif choice == '2':
-        script = os.path.join(MODULES_DIR, "analysis_density.py")
-        if os.path.exists(script): subprocess.run([sys.executable, script], cwd=os.getcwd())
-    elif choice == '3':
-        pml_file = os.path.join(MODULES_DIR, "density_map.pml")
-        if os.path.exists(pml_file):
-            print("\n--- PyMOL Instructions ---")
-            with open(pml_file) as f: print(f.read())
-            print("--------------------------")
-    elif choice == '4':
-        print("\n[-] Running Post-Processing scripts...")
-        run_script_by_prefix("13")
-        run_script_by_prefix("14")
-        run_script_by_prefix("15")
-        run_script_by_prefix("16")
-    elif choice == '5' and has_ligand:
-        print("\n[-] Running MM-PBSA calculation...")
-        run_script_by_prefix("18")
+    while True:
+        has_ligand = False
+        if os.path.exists("simulation_settings.txt"):
+            with open("simulation_settings.txt") as f:
+                for line in f:
+                    if line.startswith("ligand_file ="):
+                        val = line.split("=", 1)[1].strip()
+                        if val.lower() != "none" and val != "": has_ligand = True
+                        
+        print("\n" + "="*42)
+        print("               ANALYSIS MENU              ")
+        print("="*42)
+        print("1. Diagnostic Trajectory Repair & Integrity Check (analysis_trajectory.py - Full Solvated System)")
+        print("2. Run Density Analysis (analysis_density.py - Requires Option 4 first)")
+        print("3. Show Density Map Instructions (density_map.pml - For PyMOL)")
+        print("4. Run Full Post-Processing Pipeline (Scripts 13-16: Centering, Solvent Stripping, Methods, Cleanup)")
+        if has_ligand:
+            print("5. Run MM-PBSA Binding Affinity Calculation (Script 18)")
+            print("6. Return to Main Menu")
+        else:
+            print("5. Return to Main Menu")
+        
+        choice = input("\nSelect option: ").strip()
+        if choice == '1':
+            script = os.path.join(MODULES_DIR, "analysis_trajectory.py")
+            if os.path.exists(script):
+                subprocess.run([sys.executable, script], cwd=os.getcwd())
+                run_script_by_prefix("14")
+        elif choice == '2':
+            script = os.path.join(MODULES_DIR, "analysis_density.py")
+            if os.path.exists(script):
+                subprocess.run([sys.executable, script], cwd=os.getcwd())
+                run_script_by_prefix("14")
+        elif choice == '3':
+            pml_file = os.path.join(MODULES_DIR, "density_map.pml")
+            if os.path.exists(pml_file):
+                print("\n--- PyMOL Instructions Template (density_map.pml) ---")
+                with open(pml_file) as f: print(f.read())
+                print("-----------------------------------------------------")
+
+            cfg = load_config() if 'load_config' in globals() else {}
+            lig_name = cfg.get("ligand_resname", "MOL")
+            if not lig_name or lig_name.lower() == "none":
+                lig_name = "MOL"
+
+            pdb_candidates = [
+                "complex/05_Results/md_centered.pdb",
+                "complex/05_Results/mixed_frames.pdb",
+                "complex/md_centered.pdb",
+                "complex/mixed_frames.pdb",
+                "complex/md_0_1.pdb"
+            ]
+            chosen_pdb = next((p for p in pdb_candidates if os.path.exists(p)), "complex/05_Results/md_centered.pdb")
+
+            dx_candidates = [
+                "complex/06_Analysis/density_ligand_ALL.dx",
+                "complex/density_ligand_ALL.dx",
+                "complex/06_Analysis/density_protein_ALL.dx",
+                "complex/density_protein_ALL.dx"
+            ]
+            chosen_dx = next((d for d in dx_candidates if os.path.exists(d)), "complex/06_Analysis/density_ligand_ALL.dx")
+            dx_obj = os.path.splitext(os.path.basename(chosen_dx))[0]
+
+            print("\n--- Exact PyMOL Commands for Your Workspace ---")
+            print(f"load {chosen_pdb}")
+            print(f"load {chosen_dx}")
+            print("hide everything")
+            print("show cartoon, protein")
+            if has_ligand:
+                print(f"show sticks, resn {lig_name}")
+            print("bg_color white")
+            print(f"volume lig_fog, {dx_obj}")
+            print(r"volume_ramp_new lig_fog, \")
+            print("    0.005, blue, 0.0, \\")
+            print("    0.02,  blue, 0.1, \\")
+            print("    0.05,  cyan, 0.3, \\")
+            print("    0.10,  yellow, 0.6, \\")
+            print("    0.30,  red, 1.0")
+            if has_ligand:
+                print(f"zoom resn {lig_name}")
+            else:
+                print("zoom protein")
+            print("------------------------------------------------\n")
+        elif choice == '4':
+            print("\n[-] Running Post-Processing scripts...")
+            run_script_by_prefix("13")
+            run_script_by_prefix("14")
+            run_script_by_prefix("15")
+            run_script_by_prefix("16")
+        elif choice == '5' and has_ligand:
+            print("\n[-] Running MM-PBSA calculation...")
+            run_script_by_prefix("18")
+            run_script_by_prefix("14")
+        elif (choice == '6' and has_ligand) or (choice == '5' and not has_ligand):
+            break
+        else:
+            print("Invalid option. Please try again.")
 
 
 def interactive_config_wizard():
@@ -3649,7 +3964,6 @@ def main_menu():
 
 if __name__ == "__main__":
     main_menu()
-
 EOF_MENU
 chmod +x "$INSTALL_DIR/autogro.py"
 
