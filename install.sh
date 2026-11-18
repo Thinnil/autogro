@@ -3672,7 +3672,7 @@ def analyze_results():
                 print(f"show sticks, resn {lig_name}")
             print("bg_color white")
             print(f"volume lig_fog, {dx_obj}")
-            print(r"volume_ramp_new lig_fog, \")
+            print("volume_ramp_new lig_fog, \\")
             print("    0.005, blue, 0.0, \\")
             print("    0.02,  blue, 0.1, \\")
             print("    0.05,  cyan, 0.3, \\")
