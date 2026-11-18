@@ -547,6 +547,12 @@ log_pipeline_msg("Step 12", "OK")
 
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/13_post_processing.py"
+import os
+import subprocess
+import sys
+import glob
+import re
+import shutil
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     # Writes to the current working directory, which will be the project root
@@ -857,6 +863,10 @@ print("\n[-] SUCCESS! Multi-replica post-processing completed.")
 log_pipeline_msg("Step 13", "OK")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/14_write_methodology.py"
+import os
+import subprocess
+import sys
+import glob
 def log_pipeline_msg(step_name, msg, is_error=False):
     with open("../pipeline_report.txt" if os.path.basename(os.getcwd()) == "complex" else "pipeline_report.txt", "a") as log_f:
         prefix = "[ERROR]" if is_error else "[INFO]"
@@ -1101,6 +1111,10 @@ print(f"[-] Identified: Forcefield={ff_name}, Water={water_name}, Mode={sim_mode
 log_pipeline_msg("Step 14", "OK")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/15_organize_folder.py"
+import os
+import shutil
+import sys
+import glob
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     # Writes to the current working directory, which will be the project root
@@ -1266,6 +1280,11 @@ print("[-] Your 'complex' folder is now clean.")
 log_pipeline_msg("Step 15", "OK")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/16_compressor.py"
+import os
+import sys
+import tarfile
+import shutil
+import glob
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     with open("../pipeline_report.txt" if os.path.basename(os.getcwd()) == "complex" else "pipeline_report.txt", "a") as log_f:
@@ -1404,6 +1423,10 @@ if __name__ == "__main__":
 log_pipeline_msg("Step 16", "OK")
 EOF_AUTOGRO
 cat << 'EOF_AUTOGRO' > "$MODULES_DIR/18_mmpbsa_analysis.py"
+import os
+import sys
+import subprocess
+import glob
 def log_pipeline_msg(step_name, msg, is_error=False):
     import os
     with open("../pipeline_report.txt" if os.path.basename(os.getcwd()) == "complex" else "pipeline_report.txt", "a") as log_f:
@@ -1599,7 +1622,8 @@ def log_pipeline_msg(step_name, msg, is_error=False):
     with open("../pipeline_report.txt" if os.path.basename(os.getcwd()) == "complex" else "pipeline_report.txt", "a") as log_f:
         prefix = "[ERROR]" if is_error else "[INFO]"
         log_f.write(f"{prefix} {step_name}: {msg}\n")
-import os, glob
+import os
+import glob
 
 pdbs = glob.glob("*.pdb")
 mols = glob.glob("*.mol2") + glob.glob("*.sdf")
